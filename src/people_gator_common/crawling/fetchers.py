@@ -115,6 +115,7 @@ def download_missing(
     show_progress: bool = True,
 ) -> BatchDownloadStats:
     logger = logging.getLogger(__name__ + "." + download_missing.__name__)
+    logger.info("Splitting URLs by existing files in output directory: %s", output_dir)
     urls_to_download, skipped_existing = split_urls_by_existing_files(urls, output_dir, path_func)
     logger.info(
         "Split URLs into %d to download and %d existing files to skip",

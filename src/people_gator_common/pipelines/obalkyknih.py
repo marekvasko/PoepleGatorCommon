@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -38,7 +39,11 @@ def run_obalkyknih_html_download_pipeline(
     auth_id_column: str = "entity",
     show_progress: bool = True,
 ) -> BatchDownloadStats:
+    logger = logging.getLogger(__name__ + "." + run_obalkyknih_html_download_pipeline.__name__)
+    
+    logger.info("Generating ObalkyKnih HTML URLs from CSV: %s", input_csv)
     html_urls = _generate_html_urls_from_csv(input_csv, auth_id_column=auth_id_column)
+    logger.info("Generated %d ObalkyKnih HTML URLs", len(html_urls))
     progress_context = logging_redirect_tqdm() if show_progress else nullcontext()
     with progress_context, Session() as session:
         session.headers.update(CLIENT_HEADERS)

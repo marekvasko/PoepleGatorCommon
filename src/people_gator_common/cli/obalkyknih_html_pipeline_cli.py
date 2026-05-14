@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rate-limit-interval",
         type=float,
-        default=1.0,
+        default=0.5,
         help="Minimum interval between requests in seconds (default: 1.0).",
     )
     parser.add_argument(
