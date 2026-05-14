@@ -1,8 +1,11 @@
 from __future__ import annotations
+from collections.abc import Sequence
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import tqdm
 from requests import Session
 from people_gator_common.rate_limiter import RateLimiter, RateLimiterTooManyRequestsError
 from people_gator_common.errors import is_retryable_error
@@ -59,3 +62,63 @@ def download_image(
                     logger.info("Retrying after error")
                     continue
                 return False
+
+
+@dataclass(frozen=True, slots=True)
+class ImageBatchDownloadStats:
+    total: int
+    queued: int
+    skipped_existing: int
+    downloaded: int
+    failed: int
+
+
+def _split_urls_by_existing_files(urls: Sequence[str], output_dir: Path) -> tuple[list[str], int]:
+    urls_to_download: list[str] = []
+    skipped_existing = 0
+    for url in urls:
+        save_path = get_save_path(url, save_root=output_dir)
+        if save_path is not None and save_path.exists():
+            skipped_existing += 1
+            continue
+        urls_to_download.append(url)
+    return urls_to_download, skipped_existing
+
+
+def download_missing_images(
+    urls: Sequence[str],
+    output_dir: Path,
+    *,
+    session: Session,
+    rate_limiter: RateLimiter,
+    show_progress: bool = True,
+) -> ImageBatchDownloadStats:
+    urls_to_download, skipped_existing = _split_urls_by_existing_files(urls, output_dir)
+    downloaded = 0
+    failed = 0
+
+    iterator: Sequence[str] | tqdm.tqdm[str]
+    if show_progress:
+        iterator = tqdm.tqdm(urls_to_download, total=len(urls_to_download), desc="Downloading images")
+    else:
+        iterator = urls_to_download
+
+    for image_url in iterator:
+        success = download_image(
+            image_url,
+            output_dir=output_dir,
+            rate_limiter=rate_limiter,
+            session=session,
+        )
+        if success:
+            downloaded += 1
+        else:
+            failed += 1
+
+    return ImageBatchDownloadStats(
+        total=len(urls),
+        queued=len(urls_to_download),
+        skipped_existing=skipped_existing,
+        downloaded=downloaded,
+        failed=failed,
+    )
