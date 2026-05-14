@@ -122,15 +122,23 @@ def download_url(
                 return True
             except RateLimiterTooManyRequestsError as error:
                 logger.warning(
-                    "Too many requests error for url %s: %s", url, error, extra={"url": url}
+                    "Too many requests error for url %s: %s", 
+                    url, error, 
+                    extra={"url": url}
                 )
                 return False
             except Exception as error:
                 logger.warning(
-                    "Error fetching url %s: %s", url, error, extra={"url": url}
+                    "Error fetching url %s: %s", 
+                    url, error, 
+                    extra={"url": url}
                 )
                 if is_retryable_error(error):
-                    logger.info("Retrying after error for url %s", url, extra={"url": url})
+                    logger.info(
+                        "Retrying after error for url %s", 
+                        url, 
+                        extra={"url": url}
+                    )
                     continue
                 return False
 
