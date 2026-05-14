@@ -86,11 +86,18 @@ def main() -> int:
     logger = logging.getLogger(__name__)
     logger.info(
         "Wikicommons pipeline finished. total=%d queued=%d skipped_existing=%d downloaded=%d failed=%d",
-        stats.total,
-        stats.queued,
-        stats.skipped_existing,
-        stats.downloaded,
-        stats.failed,
+        getattr(stats, "total", 0),
+        getattr(stats, "queued", 0),
+        getattr(stats, "skipped_existing", 0),
+        getattr(stats, "downloaded", 0),
+        getattr(stats, "failed", 0),
+        extra={
+            "total": getattr(stats, "total", 0),
+            "queued": getattr(stats, "queued", 0),
+            "skipped_existing": getattr(stats, "skipped_existing", 0),
+            "downloaded": getattr(stats, "downloaded", 0),
+            "failed": getattr(stats, "failed", 0),
+        },
     )
     return 1 if stats.failed > 0 else 0
 

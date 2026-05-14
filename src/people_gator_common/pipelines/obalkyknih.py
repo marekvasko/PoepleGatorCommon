@@ -35,7 +35,7 @@ def run_obalkyknih_html_download_pipeline(
     output_dir: Path,
     *,
     rate_limiter: RateLimiter,
-    auth_id_column: str = "auth_id",
+    auth_id_column: str = "entity",
     show_progress: bool = True,
 ) -> BatchDownloadStats:
     html_urls = _generate_html_urls_from_csv(input_csv, auth_id_column=auth_id_column)
