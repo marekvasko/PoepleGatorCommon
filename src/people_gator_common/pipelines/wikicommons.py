@@ -8,7 +8,8 @@ from requests import Session
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from people_gator_common.headers import CLIENT_HEADERS
-from people_gator_common.images.download import ImageBatchDownloadStats, download_missing_images
+from people_gator_common.crawling.images import download_missing_images
+from people_gator_common.crawling.fetchers import BatchDownloadStats
 from people_gator_common.rate_limiter import RateLimiter
 
 
@@ -28,9 +29,8 @@ def run_wikicommons_images_download_pipeline(
     rate_limiter: RateLimiter,
     url_column: str = "value",
     show_progress: bool = True,
-) -> ImageBatchDownloadStats:
+) -> BatchDownloadStats:
     image_urls = _extract_image_urls_from_csv(input_csv, url_column=url_column)
-
     progress_context = logging_redirect_tqdm() if show_progress else nullcontext()
     with progress_context, Session() as session:
         session.headers.update(CLIENT_HEADERS)
