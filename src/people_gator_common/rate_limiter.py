@@ -89,7 +89,6 @@ class RateLimiter:
         return RateLimiterInstance(
             total_attempts=0,
             parent_rate_limiter=self,
-            logger=self.logger.getChild("Instance"),
         )
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
