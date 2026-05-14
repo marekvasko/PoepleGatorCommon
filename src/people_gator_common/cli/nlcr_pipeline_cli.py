@@ -40,7 +40,10 @@ def main() -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    run_nlcr_pipeline(output_dir=Path(args.output_dir), personal_authorities_link=args.personal_authorities_link)
+    run_nlcr_pipeline(
+        output_dir=str(args.output_dir), 
+        personal_authorities_link=str(args.personal_authorities_link)
+    )
     return 0
 
 
