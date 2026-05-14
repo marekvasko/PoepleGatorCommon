@@ -3,10 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tqdm
-from typing import Callable
+from collections.abc import Callable
 from pymarc import Record as PymarcRecord, parse_xml_to_array
-
-from .parsers import field_subfield_to_names
 
 
 def to_subfield_code_dict(subfields: list[dict[str, str]]) -> dict[str, list[str]]:
