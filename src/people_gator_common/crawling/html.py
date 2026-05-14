@@ -11,18 +11,18 @@ from people_gator_common.crawling.fetchers import (
 from urllib.parse import urlparse, unquote
 
 
-def derive_html_path(url: str, save_root: Path) -> Path | None:
+def derive_html_path(url: str, save_root: Path | str) -> Path | str | None:
     logger = logging.getLogger(__name__ + "." + derive_html_path.__name__)
     parsed_url = urlparse(url)
     if not parsed_url.scheme.startswith("http"):
         logger.warning("Skipping non-http URL: %s", url)
         return None
-    return save_root / parsed_url.netloc / Path(unquote(parsed_url.path.lstrip("/"))) / f"{unquote(parsed_url.query)}.html"
+    return Path(save_root) / parsed_url.netloc / Path(unquote(parsed_url.path.lstrip("/"))) / f"{unquote(parsed_url.query)}.html"
 
 
 def download_missing_html(
     urls: Sequence[str],
-    output_dir: Path,
+    output_dir: Path | str,
     *,
     session: Session,
     rate_limiter: RateLimiter,

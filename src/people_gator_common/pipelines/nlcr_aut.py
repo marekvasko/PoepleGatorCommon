@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from people_gator_common.nlcr_aut.fetchers import download_and_extract_marc2021
-from people_gator_common.nlcr_aut.parsers import print_tags_and_subfields
-from people_gator_common.nlcr_aut.io import (
+from people_gator_common.nlcr_aut import (
+    download_and_extract_marc2021, 
     marc_to_jsonl,
+    tags_and_subfields_in_jsonl,
     jsonl_information_extractor,
     build_field_data_extractor,
     build_subfield_data_extractor,
@@ -40,6 +40,9 @@ def run_nlcr_pipeline(
     # Convert to jsonl
     logger.info("Converting MARC XML to JSONL %s -> %s", downloaded_xml_path, indexed_marc_file_path)
     marc_to_jsonl(downloaded_xml_path, indexed_marc_file_path)
+
+    logger.info("Extracting tags and subfields from JSONL to %s", output_dir / "tags_and_subfields.json")
+    tags_and_subfields_in_jsonl(indexed_marc_file_path, output_dir / "tags_and_subfields.json")
 
     # Extract CSVs
     logger.info("Extract control numbers and other fields to CSVs")

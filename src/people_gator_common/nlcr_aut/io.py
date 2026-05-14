@@ -2,119 +2,76 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from people_gator_common.filesytem import open_file
 import tqdm
 from collections.abc import Callable
-from pymarc import Record as PymarcRecord, parse_xml_to_array
+from pymarc import (
+    Record as PymarcRecord, 
+    parse_xml_to_array
+)
+from people_gator_common.nlcr_aut.types import (
+    FieldCodeDataDictType,
+    ExtractedInformation,
+)
+from people_gator_common.nlcr_aut.parsers import convert_record_to_field_code_dict, csv_escape
 
-
-def to_subfield_code_dict(subfields: list[dict[str, str]]) -> dict[str, list[str]]:
-    result: dict[str, list[str]] = {}
-    for subfield in subfields:
-        key_list = list(subfield.keys())
-        if len(key_list) != 1:
-            raise ValueError(f"Expected only one key in {subfield}, but got {len(key_list)}")
-        key, value = next(iter(subfield.items()))
-        if not isinstance(value, str):
-            raise ValueError(f"Expected string value for subfield code {key}, but got {type(value)}")
-        if key not in result:
-            result[key] = []
-        result[key].append(value)
-    return result
-
-
-def to_field_code_dict(record: dict) -> dict[str, list[dict | str]]:
-    result: dict[str, list[dict | str]] = {}
-    for field in record["fields"]:
-        key_list = list(field.keys())
-        if len(key_list) != 1:
-            raise ValueError(f"Expected only one key in {field}, but got {len(key_list)}")
-        key, value = next(iter(field.items()))
-        if key not in result:
-            result[key] = []
-        if isinstance(value, str):
-            result[key].append(value)
-            continue
-        if isinstance(value, dict):
-            subfields = value.get("subfields", [])
-            result[key].append(to_subfield_code_dict(subfields))
-            continue
-        raise ValueError(f"Expected string or dict value for field code {key}, but got {type(value)}")
-    return result
-
-
-def get_control_number(field_code_dict: dict[str, list]) -> str:
-    if "001" not in field_code_dict:
-        raise ValueError(f"Expected '001' field in {field_code_dict}, but it is not present")
-    if len(field_code_dict["001"]) != 1:
-        raise ValueError(f"Expected only one '001' field in {field_code_dict}, but got {len(field_code_dict['001'])}")
-    value = field_code_dict["001"][0]
-    if not isinstance(value, str):
-        raise ValueError(f"Expected string value for '001' field, but got {type(value)}")
-    return value
-
-
-def data_list_to_exported_records(control_number: str, data_list: list[str]) -> list[dict]:
-    return [{"entity": control_number, "value": data} for data in data_list]
-
-
-def build_field_data_extractor(field_code: str) -> Callable[[dict], list[dict]]:
-    def extractor(field_code_dict: dict) -> list[dict]:
-        result: list[str] = []
-        if field_code not in field_code_dict:
-            return []
-        for value in field_code_dict[field_code]:
-            if not isinstance(value, str):
-                raise ValueError(f"Expected string value for field code {field_code}, but got {type(value)}")
-            result.append(value)
-        return data_list_to_exported_records(get_control_number(field_code_dict), result)
-
-    return extractor
-
-
-def build_subfield_data_extractor(field_code: str, subfield_code: str) -> Callable[[dict], list[dict]]:
-    def extractor(field_code_dict: dict) -> list[dict]:
-        result: list[str] = []
-        if field_code not in field_code_dict:
-            return []
-        for value in field_code_dict[field_code]:
-            if not isinstance(value, dict):
-                raise ValueError(f"Expected dict value for field code {field_code}, but got {type(value)}")
-            if subfield_code not in value:
-                continue
-            subfield_value = value[subfield_code]
-            if not isinstance(subfield_value, list):
-                raise ValueError(f"Expected list value for subfield code {subfield_code} in field code {field_code}, but got {type(subfield_value)}")
-            for subfield_value_item in subfield_value:
-                if not isinstance(subfield_value_item, str):
-                    raise ValueError(f"Expected string value for subfield code {subfield_code} in field code {field_code}, but got {type(subfield_value_item)}")
-                result.append(subfield_value_item)
-        return data_list_to_exported_records(get_control_number(field_code_dict), result)
-
-    return extractor
-
-
-def marc_to_jsonl(input_marc_xml_path: Path, output_jsonl_path: Path) -> None:
+def marc_to_jsonl(
+    input_marc_xml_path: Path | str, 
+    output_jsonl_path: Path | str
+) -> None:
     records: list[PymarcRecord] = parse_xml_to_array(str(input_marc_xml_path))
-    with open(output_jsonl_path, "w", encoding="utf-8") as f:
+    with open_file(output_jsonl_path, "w") as f:
         for record in tqdm.tqdm(records, desc="Converting to JSONL"):
-            record_dict = record.as_dict()
-            field_code_dict = to_field_code_dict(record_dict)  # type: ignore
+            field_code_dict = convert_record_to_field_code_dict(record)
             f.write(json.dumps(field_code_dict) + "\n")
 
+def sort_subfields(subfields: set[str] | None) -> list[str] | None:
+    if subfields is None:
+        return None
+    return sorted(subfields)
 
-def csv_escape(value: str) -> str:
-    if '"' in value:
-        value = value.replace('"', '""')
-    if ',' in value or '"' in value or '\n' in value:
-        value = f'"{value}"'
-    return value
+def tags_and_subfields_in_jsonl(
+    input_jsonl_path: str | Path,
+    output_tags_and_subfields_json_path: str | Path,
+) -> None:
+    tags: dict[str, None | set[str]] = {}
+    with open_file(input_jsonl_path, 'r') as f:
+        for line in tqdm.tqdm(f, desc="Gathering tags and subfields from JSONL"):
+            field_code_dict: FieldCodeDataDictType = json.loads(line)
+            for tag, values in field_code_dict.items():
+                is_data_field = all(isinstance(value, str) for value in values)
+                is_subfield_field = all(isinstance(value, dict) for value in values)
+                if is_data_field and tag not in tags:
+                    tags[tag] = None
+                if is_data_field and tag in tags and tags[tag] is not None:
+                    raise ValueError(f"Expected only one of data or subfields for field code {tag}, but got both")
+                if is_subfield_field and tag not in tags:
+                    tags[tag] = set()
+                if is_subfield_field and tag in tags and tags[tag] is None:
+                    raise ValueError(f"Expected only one of data or subfields for field code {tag}, but got both")
+                if is_subfield_field and tag in tags and tags[tag] is not None:
+                    for value in values:
+                        if not isinstance(value, dict):
+                            raise ValueError(f"Expected dict value for subfields of field code {tag}, but got {type(value)}")
+                        for subfield_code in value.keys():
+                            subfield_set = tags[tag]
+                            if subfield_set is None:
+                                raise ValueError(f"Expected set for subfields of field code {tag}, but got None")
+                            subfield_set.add(subfield_code)
+    tags_sorted = {tag: sort_subfields(tags[tag]) for tag in sorted(tags.keys())}
+    with open_file(output_tags_and_subfields_json_path, 'w') as f:
+        json.dump(tags_sorted, f, indent=2)
+    
 
-
-def jsonl_information_extractor(input_jsonl_path: Path, output_csv_path: Path, information_extractor: Callable[[dict], list[dict]]) -> None:
-    with open(input_jsonl_path, 'r', encoding='utf-8') as fi, open(output_csv_path, 'w', encoding='utf-8') as fo:
+def jsonl_information_extractor(
+    input_jsonl_path: Path | str, 
+    output_csv_path: Path | str, 
+    information_extractor: Callable[[FieldCodeDataDictType], list[ExtractedInformation]]
+) -> None:
+    with open_file(input_jsonl_path, 'r') as fi, open_file(output_csv_path, 'w') as fo:
         fo.write(f"entity,value\n")
         for line in tqdm.tqdm(fi, desc="Extracting Information from JSONL"):
-            field_code_dict: dict = json.loads(line)
+            field_code_dict: FieldCodeDataDictType = json.loads(line)
             extracted_information = information_extractor(field_code_dict)
             for info in extracted_information:
                 fo.write(f"{csv_escape(info['entity'])},{csv_escape(info['value'])}\n")
