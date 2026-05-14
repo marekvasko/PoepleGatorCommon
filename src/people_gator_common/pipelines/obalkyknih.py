@@ -9,8 +9,8 @@ from people_gator_common.obalkyknih.parsers import extract_previewimage_from_htm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 def run_obalkyknih_html_download_pipeline(
-    input_csv: str | os.PathLike,
-    output_dir: str | os.PathLike,
+    input_csv: str,
+    output_dir: str,
     *,
     rate_limiter: RateLimiter,
     auth_id_column: str = "entity",
@@ -26,8 +26,8 @@ def run_obalkyknih_html_download_pipeline(
         )
 
 def run_obalkyknih_html_parse_pipeline(
-    html_dir: str | os.PathLike,
-    output_csv: str | os.PathLike,
+    html_dir: str,
+    output_csv: str,
     *,
     show_progress: bool = True,
 ) -> pd.DataFrame:

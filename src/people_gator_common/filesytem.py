@@ -41,41 +41,43 @@ def get_fs() -> AbstractFileSystem:
     return _setup_filesystem()
 
 
-def _to_str_path(path: str | os.PathLike) -> str:
+def _to_str_path(path: str) -> str:
     return str(path)
 
 
-def exists(path: str | os.PathLike) -> bool:
+def exists(path: str) -> bool:
     fs = get_fs()
     return fs.exists(_to_str_path(path))
 
-
-def ls(path: str | os.PathLike) -> list[str]:
+def ls(path: str) -> list[str]:
     fs = get_fs()
     return fs.ls(_to_str_path(path))
 
-def glob(path: str | os.PathLike) -> list[str]:
+def glob(path: str) -> list[str]:
     fs = get_fs()
     files = [str(p) for p in fs.glob(_to_str_path(path), detail=False)]
     return files
 
-def ensure_parent_dir(path: str | os.PathLike) -> None:
+def makedirs(path: str, exist_ok: bool = True) -> None:
+    fs = get_fs()
+    fs.makedirs(_to_str_path(path), exist_ok=exist_ok)
+
+def ensure_parent_dir(path: str) -> None:
     """Ensure parent directory for `path` exists when supported by the FS.
 
     This is a best-effort helper: local filesystems will create directories,
     object stores may no-op.
     """
-    fs = get_fs()
     parent = os.path.dirname(_to_str_path(path))
     if not parent:
         return
     try:
-        fs.makedirs(parent, exist_ok=True)
+        makedirs(parent, exist_ok=True)
     except Exception:
         # Some remote filesystems don't implement makedirs; ignore failures
         return
 
-def open_file(path: str | os.PathLike, mode: str = "rb", **kwargs) -> IO[Any]:
+def open_file(path: str, mode: str = "rb", **kwargs) -> IO[Any]:
     """Open a file on the configured filesystem and return a file-like object.
 
     Additional keyword arguments (for example `encoding=`) are forwarded to
@@ -85,18 +87,18 @@ def open_file(path: str | os.PathLike, mode: str = "rb", **kwargs) -> IO[Any]:
     return cast(IO[Any], fs.open(_to_str_path(path), mode=mode, **kwargs))
 
 
-def read_text(path: str | os.PathLike, encoding: str = "utf-8") -> str:
+def read_text(path: str, encoding: str = "utf-8") -> str:
     with open_file(path, mode="r", encoding=encoding) as fh:
         return fh.read()
 
 
-def write_text(path: str | os.PathLike, data: str, encoding: str = "utf-8") -> None:
+def write_text(path: str, data: str, encoding: str = "utf-8") -> None:
     ensure_parent_dir(path)
     with open_file(path, mode="w", encoding=encoding) as fh:
         fh.write(data)
 
 
-def write_bytes(path: str | os.PathLike, data: bytes) -> None:
+def write_bytes(path: str, data: bytes) -> None:
     ensure_parent_dir(path)
     with open_file(path, mode="wb") as fh:
         fh.write(data)
@@ -105,6 +107,8 @@ __all__ = [
     "get_fs",
     "exists",
     "ls",
+    "glob",
+    "makedirs",
     "ensure_parent_dir",
     "open_file",
     "read_text",

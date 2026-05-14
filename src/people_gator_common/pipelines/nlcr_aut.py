@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from people_gator_common.nlcr_aut import (
     download_and_extract_marc2021, 
@@ -12,27 +11,29 @@ from people_gator_common.nlcr_aut import (
     build_subfield_data_extractor,
 )
 from people_gator_common.wikidata.processors import unique_values_from_csv
-
+from people_gator_common.filesytem import makedirs, open_file, ensure_parent_dir
+from os.path import join
 
 def run_nlcr_pipeline(
-    output_dir: Path,
+    output_dir: str,
     *,
     personal_authorities_link: str = "https://aleph.nkp.cz/data/aut_ja.xml.gz",
 ) -> None:
     logger = logging.getLogger(__name__)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    makedirs(output_dir)
 
-    downloaded_xml_path = output_dir / "nlcr_aut_marc21.xml"
-    indexed_marc_file_path = output_dir / "nlcr_aut_marc21.jsonl"
+    downloaded_xml_path = join(output_dir, "nlcr_aut_marc21.xml")
+    indexed_marc_file_path = join(output_dir, "nlcr_aut_marc21.jsonl")
+    
+    tags_and_subfields_json_path = join(output_dir, "nlcr_aut__tags_and_subfields.json")
 
-    control_numbers_csv_path = output_dir / "nlcr_aut__control_numbers.csv"
-    person_names_csv_path = output_dir / "nlcr_aut__person_names.csv"
-    descriptions_csv_path = output_dir / "nlcr_aut__descriptions.csv"
-    also_known_as_csv_path = output_dir / "nlcr_aut__also_known_as.csv"
-    death_dates_csv_path = output_dir / "nlcr_aut__death_dates.csv"
-    birth_dates_csv_path = output_dir / "nlcr_aut__birth_dates.csv"
-
-    unique_control_numbers_csv_path = output_dir / "unique_control_numbers.csv"
+    control_numbers_csv_path = join(output_dir, "nlcr_aut__control_numbers.csv")
+    person_names_csv_path = join(output_dir, "nlcr_aut__person_names.csv")
+    descriptions_csv_path = join(output_dir, "nlcr_aut__descriptions.csv")
+    also_known_as_csv_path = join(output_dir, "nlcr_aut__also_known_as.csv")
+    death_dates_csv_path = join(output_dir, "nlcr_aut__death_dates.csv")
+    birth_dates_csv_path = join(output_dir, "nlcr_aut__birth_dates.csv")
+    unique_control_numbers_csv_path = join(output_dir, "unique_control_numbers.csv")
 
     logger.info("Downloading NLCR personal authorities from %s", personal_authorities_link)
     download_and_extract_marc2021(personal_authorities_link, downloaded_xml_path)
@@ -41,8 +42,8 @@ def run_nlcr_pipeline(
     logger.info("Converting MARC XML to JSONL %s -> %s", downloaded_xml_path, indexed_marc_file_path)
     marc_to_jsonl(downloaded_xml_path, indexed_marc_file_path)
 
-    logger.info("Extracting tags and subfields from JSONL to %s", output_dir / "tags_and_subfields.json")
-    tags_and_subfields_in_jsonl(indexed_marc_file_path, output_dir / "tags_and_subfields.json")
+    logger.info("Extracting tags and subfields from JSONL to %s", tags_and_subfields_json_path)
+    tags_and_subfields_in_jsonl(indexed_marc_file_path, tags_and_subfields_json_path)
 
     # Extract CSVs
     logger.info("Extract control numbers and other fields to CSVs")

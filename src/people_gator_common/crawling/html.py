@@ -12,7 +12,7 @@ from people_gator_common.crawling.fetchers import (
 from urllib.parse import urlparse, unquote
 
 
-def derive_html_path(url: str, save_root: str | os.PathLike) -> str | None:
+def derive_html_path(url: str, save_root: str) -> str | None:
     logger = logging.getLogger(__name__ + "." + derive_html_path.__name__)
     parsed_url = urlparse(url)
     if not parsed_url.scheme.startswith("http"):
@@ -28,7 +28,7 @@ def derive_html_path(url: str, save_root: str | os.PathLike) -> str | None:
 
 def download_missing_html(
     urls: Sequence[str],
-    output_dir: str | os.PathLike,
+    output_dir: str,
     *,
     session: Session,
     rate_limiter: RateLimiter,

@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 import pandas as pd
 from SPARQLWrapper import SPARQLWrapper
+from people_gator_common.filesytem import open_file, ensure_parent_dir
 
 from .sparql_client import (
     rate_limited_query_all,
@@ -22,25 +23,27 @@ from .queries import (
 def extract_entity_id(entity_uri: str) -> str:
     return entity_uri.rsplit("/", maxsplit=1)[-1]
 
-def extract_entity_list_from_csv(csv_path: Path) -> list[str]:
-    df = pd.read_csv(csv_path)
+def extract_entity_list_from_csv(csv_path: str) -> list[str]:
+    with open_file(csv_path, "r") as f:
+        df = pd.read_csv(f)
     if "entity" not in df.columns:
         raise ValueError(f"CSV file {csv_path} must contain 'entity' column")
     return df["entity"].apply(extract_entity_id).tolist()
 
-def save_to_csv_if_applicable(df: pd.DataFrame, output_file: Path | None) -> None:
+def save_to_csv_if_applicable(df: pd.DataFrame, output_file: str | None) -> None:
     if output_file is not None:
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(output_file, index=False)
+        ensure_parent_dir(output_file)
+        with open_file(output_file, "w", encoding="utf-8") as f:
+            df.to_csv(f, index=False)
 
 def fetch_property_values_for_entities(
     property_id: str,
-    entities_csv_path: Path,
+    entities_csv_path: str,
+    output_file: str,
     *,
     client: SPARQLWrapper,
     batch_size: int,
     rate_limiter: RateLimiter,
-    output_file: Path | None = None,
 ) -> pd.DataFrame:
     logger = logging.getLogger(__name__ + "." + fetch_property_values_for_entities.__name__)
 
@@ -67,12 +70,12 @@ def fetch_property_values_for_entities(
 
 def fetch_texts_of_entities(
     text_property: Literal["labels", "descriptions", "alt_labels"],
-    entities_csv_path: Path,
+    entities_csv_path: str,
+    output_file: str,
     *,
     client: SPARQLWrapper,
     batch_size: int,
     rate_limiter: RateLimiter,
-    output_file: Path | None = None,
 ) -> pd.DataFrame:
     logger = logging.getLogger(__name__ + "." + fetch_texts_of_entities.__name__)
     
@@ -101,12 +104,12 @@ def fetch_texts_of_entities(
 def fetch_people_of_property(
     property_id: str,
     value_id: str,
+    output_file: str,
     *,
     client: SPARQLWrapper,
     batch_size: int,
     use_cursor: bool,
     rate_limiter: RateLimiter,
-    output_file: Path | None = None,
 ) -> pd.DataFrame:
     logger = logging.getLogger(__name__ + "." + fetch_people_of_property.__name__)
 

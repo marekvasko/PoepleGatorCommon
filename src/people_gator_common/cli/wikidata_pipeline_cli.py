@@ -13,7 +13,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-o",
         "--output-dir",
-        type=Path,
+        type=str,
         required=True,
         help="Directory to save output files.",
     )
@@ -66,7 +66,7 @@ def main() -> int:
     )
 
     run_wikidata_pipeline(
-        output_dir=Path(args.output_dir),
+        output_dir=str(args.output_dir),
         receive_batch_size=int(args.receive_batch_size),
         send_batch_size=int(args.send_batch_size),
         rate_limit_interval=float(args.rate_limit_interval),

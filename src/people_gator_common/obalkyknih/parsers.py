@@ -10,7 +10,7 @@ from tqdm import tqdm
 from people_gator_common.nlcr_aut.io import csv_escape
 
 def extract_previewimage_from_html(
-    path: str | os.PathLike
+    path: str
 ) -> str | None:
     """Return the `href` from a <link rel="previewimage"> tag, or None if not present."""
     html = read_text(path)
@@ -24,8 +24,8 @@ def extract_previewimage_from_html(
     return None
 
 def extract_previewimage_from_htmls(
-    html_dir: str | os.PathLike,
-    output_csv: str | os.PathLike,
+    html_dir: str,
+    output_csv: str,
     *,
     show_progress: bool = True,
 ) -> pd.DataFrame:

@@ -14,14 +14,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-i",
         "--input-csv",
-        type=Path,
-        default=Path("output/unique_nl_cr_aut_id.csv"),
+        type=str,
+        default="output/unique_nl_cr_aut_id.csv",
         help="CSV file containing NLCR AUT IDs.",
     )
     parser.add_argument(
         "-o",
         "--output-dir",
-        type=Path,
+        type=str,
         required=True,
         help="Directory to save downloaded HTML files.",
     )
@@ -79,8 +79,8 @@ def main() -> int:
     )
 
     stats = run_obalkyknih_html_download_pipeline(
-        input_csv=Path(args.input_csv),
-        output_dir=Path(args.output_dir),
+        input_csv=str(args.input_csv),
+        output_dir=str(args.output_dir),
         rate_limiter=rate_limiter,
         auth_id_column=args.auth_id_column,
         show_progress=not bool(args.hide_progress),

@@ -11,8 +11,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CLI for Wikicommons image download pipeline.")
     parser.add_argument(
         "--input-csv",
-        type=Path,
-        default=Path("output/people_all_P18.csv"),
+        type=str,
+        default="output/people_all_P18.csv",
         help="CSV file containing image URLs.",
     )
     parser.add_argument(
@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
         help="Column name in --input-csv containing image URLs.",
     )
     parser.add_argument(
-        "-o", "--output-dir", type=Path, required=True, help="Directory to save output files."
+        "-o", "--output-dir", type=str, required=True, help="Directory to save output files."
     )
     parser.add_argument(
         "--hide-progress",
@@ -77,8 +77,8 @@ def main() -> int:
         min_request_interval=rate_limit_interval,
     )
     stats = run_wikicommons_images_download_pipeline(
-        input_csv=Path(args.input_csv),
-        output_dir=output_dir,
+        input_csv=str(args.input_csv),
+        output_dir=str(args.output_dir),
         rate_limiter=rate_limiter,
         url_column=args.url_column,
         show_progress=not bool(args.hide_progress),

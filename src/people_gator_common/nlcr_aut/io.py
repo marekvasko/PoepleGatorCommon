@@ -16,8 +16,8 @@ from people_gator_common.nlcr_aut.types import (
 from people_gator_common.nlcr_aut.parsers import convert_record_to_field_code_dict, csv_escape
 
 def marc_to_jsonl(
-    input_marc_xml_path: Path | str, 
-    output_jsonl_path: Path | str
+    input_marc_xml_path: str, 
+    output_jsonl_path: str
 ) -> None:
     records: list[PymarcRecord] = parse_xml_to_array(str(input_marc_xml_path))
     with open_file(output_jsonl_path, "w") as f:
@@ -31,8 +31,8 @@ def sort_subfields(subfields: set[str] | None) -> list[str] | None:
     return sorted(subfields)
 
 def tags_and_subfields_in_jsonl(
-    input_jsonl_path: str | Path,
-    output_tags_and_subfields_json_path: str | Path,
+    input_jsonl_path: str,
+    output_tags_and_subfields_json_path: str,
 ) -> None:
     tags: dict[str, None | set[str]] = {}
     with open_file(input_jsonl_path, 'r') as f:
@@ -64,8 +64,8 @@ def tags_and_subfields_in_jsonl(
     
 
 def jsonl_information_extractor(
-    input_jsonl_path: Path | str, 
-    output_csv_path: Path | str, 
+    input_jsonl_path: str, 
+    output_csv_path: str, 
     information_extractor: Callable[[FieldCodeDataDictType], list[ExtractedInformation]]
 ) -> None:
     with open_file(input_jsonl_path, 'r') as fi, open_file(output_csv_path, 'w') as fo:

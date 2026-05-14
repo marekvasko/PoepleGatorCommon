@@ -11,10 +11,11 @@ from people_gator_common.headers import CLIENT_HEADERS
 from people_gator_common.crawling.images import download_missing_images
 from people_gator_common.crawling.fetchers import BatchDownloadStats
 from people_gator_common.rate_limiter import RateLimiter
+from people_gator_common.filesytem import open_file
 
-
-def _extract_image_urls_from_csv(image_csv: Path, *, url_column: str) -> list[str]:
-    images_df = pd.read_csv(image_csv)
+def _extract_image_urls_from_csv(image_csv: str, *, url_column: str) -> list[str]:
+    with open_file(image_csv, "r") as f:
+        images_df = pd.read_csv(f)
     if url_column not in images_df.columns:
         raise ValueError(f"CSV file {image_csv} must contain '{url_column}' column")
     urls = images_df[url_column].dropna().astype(str).str.strip()
@@ -23,8 +24,8 @@ def _extract_image_urls_from_csv(image_csv: Path, *, url_column: str) -> list[st
 
 
 def run_wikicommons_images_download_pipeline(
-    input_csv: Path,
-    output_dir: Path,
+    input_csv: str,
+    output_dir: str,
     *,
     rate_limiter: RateLimiter,
     url_column: str = "value",

@@ -18,7 +18,7 @@ def generate_obalkyknih_url(nlcr_aut_id: str) -> str:
     return OBALKYKNIH_URL_TEMPLATE.format(auth_id=nlcr_aut_id)
 
 def obalkyknih_urls_from_csv(
-    input_csv: str | os.PathLike,
+    input_csv: str,
     *,
     auth_id_column: str,
 ) -> list[str]:
@@ -32,8 +32,8 @@ def obalkyknih_urls_from_csv(
     return urls
 
 def download_missing_obalkyknih_htmls(
-    input_csv: str | os.PathLike,
-    output_dir: str | os.PathLike,
+    input_csv: str,
+    output_dir: str,
     *,
     rate_limiter: RateLimiter,
     auth_id_column: str = "entity",
