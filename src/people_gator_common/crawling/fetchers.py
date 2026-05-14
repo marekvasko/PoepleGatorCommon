@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections.abc import Callable, Sequence
-from pathlib import Path
+import os
 from typing import Literal
 from requests import Session
 from people_gator_common.rate_limiter import RateLimiter, RateLimiterTooManyRequestsError
@@ -8,12 +8,9 @@ from people_gator_common.errors import is_retryable_error
 from people_gator_common.filesytem import exists, ensure_parent_dir, write_text, write_bytes
 import logging
 import tqdm
-
-type PathFunc = Callable[[str, Path | str], Path | str | None]
-
-
 from dataclasses import dataclass
 
+type PathFunc = Callable[[str, str | os.PathLike], str | os.PathLike | None]
 
 @dataclass(frozen=True, slots=True)
 class BatchDownloadStats:
@@ -26,7 +23,7 @@ class BatchDownloadStats:
 
 def split_urls_by_existing_files(
     urls: Sequence[str], 
-    output_dir: Path | str,
+    output_dir: str | os.PathLike,
     path_func: PathFunc,
     *,
     show_progress: bool = True,
@@ -69,7 +66,7 @@ def split_urls_by_existing_files(
 
 def download_url(
     url: str,
-    output_dir: Path | str,
+    output_dir: str | os.PathLike,
     *,
     path_func: PathFunc,
     session: Session,
@@ -145,7 +142,7 @@ def download_url(
 
 def download_missing(
     urls: Sequence[str],
-    output_dir: Path | str,
+    output_dir: str | os.PathLike,
     *,
     path_func: PathFunc,
     session: Session,
@@ -154,7 +151,9 @@ def download_missing(
     show_progress: bool = True,
 ) -> BatchDownloadStats:
     logger = logging.getLogger(__name__ + "." + download_missing.__name__)
-    urls_to_download, skipped_existing = split_urls_by_existing_files(urls, output_dir, path_func)
+    urls_to_download, skipped_existing = split_urls_by_existing_files(
+        urls, output_dir, path_func
+    )
     downloaded = 0
     failed = 0
 

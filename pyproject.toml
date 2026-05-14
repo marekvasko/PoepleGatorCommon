@@ -38,6 +38,7 @@ people-gator-wikidata = "people_gator_common.cli.wikidata_pipeline_cli:main"
 people-gator-wikicommons = "people_gator_common.cli.wikicommons_pipeline_cli:main"
 people-gator-nlcr = "people_gator_common.cli.nlcr_pipeline_cli:main"
 people-gator-obalkyknih-html = "people_gator_common.cli.obalkyknih_html_pipeline_cli:main"
+people-gator-obalkyknih-extract = "people_gator_common.cli.obalkyknih_extraction_pipeline_cli:main"
 
 [build-system]
 requires = ["uv_build>=0.10.8,<0.11.0"]

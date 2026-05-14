@@ -54,6 +54,10 @@ def ls(path: str | os.PathLike) -> list[str]:
     fs = get_fs()
     return fs.ls(_to_str_path(path))
 
+def glob(path: str | os.PathLike) -> list[str]:
+    fs = get_fs()
+    files = [str(p) for p in fs.glob(_to_str_path(path), detail=False)]
+    return files
 
 def ensure_parent_dir(path: str | os.PathLike) -> None:
     """Ensure parent directory for `path` exists when supported by the FS.
@@ -96,7 +100,6 @@ def write_bytes(path: str | os.PathLike, data: bytes) -> None:
     ensure_parent_dir(path)
     with open_file(path, mode="wb") as fh:
         fh.write(data)
-
 
 __all__ = [
     "get_fs",
