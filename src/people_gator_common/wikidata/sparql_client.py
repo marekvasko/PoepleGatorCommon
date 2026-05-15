@@ -6,7 +6,7 @@ import logging
 from typing import TypeAlias, cast
 import pandas as pd
 from SPARQLWrapper import JSON, SPARQLWrapper
-from ..rate_limiter import RateLimiter, RateLimiterTooManyRequestsError
+from ..rate_limiter import RateLimiter, RateLimiterInstance, RateLimiterTooManyRequestsError
 from ..errors import (
     is_retryable_error
 )
@@ -42,6 +42,25 @@ def parse_sparql_results(json_result: SparqlJsonResult) -> pd.DataFrame:
 
 # Error detection helpers moved to wikidata.errors
 
+def single_query_attempt(                         
+    client: SPARQLWrapper,
+    query: str,
+    rate_limiter_instance: RateLimiterInstance,
+):
+    logger = logging.getLogger(__name__ + "." + single_query_attempt.__name__)
+    client.setQuery(query)
+    client.setReturnFormat(JSON)
+    max_query_log_len = 128
+    trunc_query = " ".join(line.strip() for line in query.splitlines() if line.strip())
+    trunc_end = "..."
+    logger.info(
+        "Attempting query: %s",
+        trunc_query[: (max_query_log_len - len(trunc_end))] + (trunc_end if len(trunc_query) > max_query_log_len else ""),
+    )
+    rate_limiter_instance.request()
+    json_result = cast(SparqlJsonResult, client.query().convert())
+    logger.info("Successful query")
+    return json_result
 
 def execute_sparql_query(
     *,
@@ -53,19 +72,7 @@ def execute_sparql_query(
     with rate_limiter as rl:
         while True:
             try:
-                client.setQuery(query)
-                client.setReturnFormat(JSON)
-                max_query_log_len = 128
-                trunc_query = " ".join(line.strip() for line in query.splitlines() if line.strip())
-                trunc_end = "..."
-                logger.info(
-                    "Executing query: %s",
-                    trunc_query[: (max_query_log_len - len(trunc_end))] + (trunc_end if len(trunc_query) > max_query_log_len else ""),
-                )
-                rl.request()
-                json_result = cast(SparqlJsonResult, client.query().convert())
-                logger.info("Successful query")
-                return json_result
+                return single_query_attempt(client, query, rl)
             except JSONDecodeError:
                 logger.warning("JSON decode error")
                 continue
