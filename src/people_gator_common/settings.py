@@ -27,17 +27,24 @@ class LocalSettings(BaseModel):
 class LakeFSSettings(BaseModel):
     """Settings for LakeFS storage."""
     enabled: bool = False
-    endpoint_url: str | None = None
-    access_key_id: str | None = None
-    secret_access_key: str | None = None
     repository: str | None = None
-    branch: str | None = None    
+    branch: str | None = None
+    host: str | None = None
+    api_key: str | None = None
+    access_token: str | None = None
 
 class StorageSettings(BaseModel):
     """Supported storage types for ffspec filesystem configuration."""
     s3: S3Settings = S3Settings()
     local: LocalSettings = LocalSettings()
     lakefs: LakeFSSettings = LakeFSSettings()
+    
+    # only one storage type can be enabled at a time
+    def __init__(self, **data):
+        super().__init__(**data)
+        enabled_storage_types = [storage_type for storage_type, settings in self.model_dump().items() if settings["enabled"]]
+        if len(enabled_storage_types) > 1:
+            raise ValueError(f"Multiple storage types enabled: {enabled_storage_types}. Only one can be enabled at a time.")
 
 
 class RateLimiterSettings(BaseModel):
