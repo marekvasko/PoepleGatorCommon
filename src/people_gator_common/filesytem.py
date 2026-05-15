@@ -18,6 +18,16 @@ def _setup_filesystem() -> AbstractFileSystem:
 
     settings = PeopleGatorSettings()
     storage = settings.storage
+    all_enabled = [
+        ("local", storage.local.enabled),
+        ("s3", storage.s3.enabled),
+        ("lakefs", storage.lakefs.enabled),
+    ]
+    enabled_types = [name for name, enabled in all_enabled if enabled]
+    if len(enabled_types) == 0:
+        raise ValueError("No storage type enabled in settings")
+    if len(enabled_types) > 1:
+        raise ValueError(f"Multiple storage types enabled: {enabled_types}. Only one can be enabled at a time.")
     if storage.local.enabled:
         if not storage.local.root:
             raise ValueError("Local storage enabled but no root path specified")
