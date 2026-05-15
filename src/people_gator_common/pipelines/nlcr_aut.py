@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
 
 from people_gator_common.nlcr_aut import (
@@ -52,31 +53,20 @@ def run_nlcr_pipeline(
         output_csv_path=control_numbers_csv_path,
         information_extractor=build_field_data_extractor("001"),
     )
-    jsonl_information_extractor(
-        input_jsonl_path=indexed_marc_file_path,
-        output_csv_path=person_names_csv_path,
-        information_extractor=build_subfield_data_extractor("100", "a"),
-    )
-    jsonl_information_extractor(
-        input_jsonl_path=indexed_marc_file_path,
-        output_csv_path=descriptions_csv_path,
-        information_extractor=build_subfield_data_extractor("678", "a"),
-    )
-    jsonl_information_extractor(
-        input_jsonl_path=indexed_marc_file_path,
-        output_csv_path=also_known_as_csv_path,
-        information_extractor=build_subfield_data_extractor("400", "a"),
-    )
-    jsonl_information_extractor(
-        input_jsonl_path=indexed_marc_file_path,
-        output_csv_path=birth_dates_csv_path,
-        information_extractor=build_subfield_data_extractor("046", "f"),
-    )
-    jsonl_information_extractor(
-        input_jsonl_path=indexed_marc_file_path,
-        output_csv_path=death_dates_csv_path,
-        information_extractor=build_subfield_data_extractor("046", "g"),
-    )
+    tasks = [
+        ("person names", person_names_csv_path, build_subfield_data_extractor("100", "a")),
+        ("descriptions", descriptions_csv_path, build_subfield_data_extractor("678", "a")),
+        ("also known as", also_known_as_csv_path, build_subfield_data_extractor("400", "a")),
+        ("birth dates", birth_dates_csv_path, build_subfield_data_extractor("046", "f")),
+        ("death dates", death_dates_csv_path, build_subfield_data_extractor("046", "g")),
+    ]
+    for field_name, output_csv_path, extractor in tasks:
+        logger.info("Extracting %s to %s", field_name, output_csv_path)
+        jsonl_information_extractor(
+            input_jsonl_path=indexed_marc_file_path,
+            output_csv_path=output_csv_path,
+            information_extractor=extractor,
+        )
 
     # Deduplicate control numbers
     logger.info("Creating unique control numbers CSV")
