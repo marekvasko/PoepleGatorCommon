@@ -1,8 +1,7 @@
 from enum import Enum
-from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AliasChoices, BaseModel, Field, AliasPath
+from pydantic import BaseModel
 
 class LOG_LEVEL(str, Enum):
     DEBUG = "DEBUG"
@@ -11,22 +10,23 @@ class LOG_LEVEL(str, Enum):
     ERROR = "ERROR"
     CRITICAL = "CRITICAL"
 
-class S3Settings(BaseModel):
-    """Settings for S3 storage."""
+class BaseStorageSettings(BaseModel):
+    """Base settings for storage configurations."""
     enabled: bool = False
+
+class S3Settings(BaseStorageSettings):
+    """Settings for S3 storage."""
     bucket: str | None = None
     access_key_id: str | None = None
     secret_access_key: str | None = None
     endpoint_url: str | None = None
 
-class LocalSettings(BaseModel):
+class LocalSettings(BaseStorageSettings):
     """Settings for local filesystem storage."""
-    enabled: bool = False
     root: str | None = None
 
-class LakeFSSettings(BaseModel):
+class LakeFSSettings(BaseStorageSettings):
     """Settings for LakeFS storage."""
-    enabled: bool = False
     repository: str | None = None
     branch: str | None = None
     host: str | None = None
@@ -38,13 +38,6 @@ class StorageSettings(BaseModel):
     s3: S3Settings = S3Settings()
     local: LocalSettings = LocalSettings()
     lakefs: LakeFSSettings = LakeFSSettings()
-    
-    # only one storage type can be enabled at a time
-    def __init__(self, **data):
-        super().__init__(**data)
-        enabled_storage_types = [storage_type for storage_type, settings in self.model_dump().items() if settings["enabled"]]
-        if len(enabled_storage_types) > 1:
-            raise ValueError(f"Multiple storage types enabled: {enabled_storage_types}. Only one can be enabled at a time.")
 
 
 class RateLimiterSettings(BaseModel):
