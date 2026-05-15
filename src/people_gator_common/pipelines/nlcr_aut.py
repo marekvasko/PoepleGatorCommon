@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-from collections.abc import Callable
 import logging
 
 from people_gator_common.nlcr_aut import (
@@ -12,7 +10,7 @@ from people_gator_common.nlcr_aut import (
     build_subfield_data_extractor,
 )
 from people_gator_common.wikidata.processors import unique_values_from_csv
-from people_gator_common.filesytem import makedirs, open_file, ensure_parent_dir
+from people_gator_common.filesytem import makedirs
 from os.path import join
 
 def run_nlcr_pipeline(
