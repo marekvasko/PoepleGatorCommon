@@ -8,6 +8,25 @@ import tqdm
 
 from people_gator_common.filesytem import glob, write_bytes
 
+def get_files_to_upload(
+    local_files: list[Path],
+    uploaded_files: set[str],
+    src: Path,
+    dest: str,
+    diff_only: bool
+) -> list[tuple[Path, str]]:
+    """Determine which local files need to be uploaded based on existing files in storage."""
+    files_to_upload: list[tuple[Path, str]] = []
+    for path in local_files:
+        if path.is_symlink() or path.is_dir():
+            continue
+        rel_path = path.relative_to(src)
+        rel_path_str = str(rel_path)
+        dest_path = os.path.join(dest, rel_path_str) if dest else rel_path_str
+        if diff_only and dest_path in uploaded_files:
+            continue
+        files_to_upload.append((path, dest_path))
+    return files_to_upload
 
 def upload_directory(
     src: Path, 
@@ -29,17 +48,12 @@ def upload_directory(
     uploaded = 0
     src = src.resolve()
     rglobbed_files: list[Path] = list(tqdm.tqdm(src.rglob("*"), desc="Scanning files to upload"))
+    print(f"Globing remote files in destination '{dest or '/'}' for diffing...")
     uploaded_files: set[str] = set(glob(os.path.join(dest, "**", "*"))) if diff_only else set()
-    for path in tqdm.tqdm(rglobbed_files, desc="Processing files"):
-        if path.is_symlink():
-            continue
-        if path.is_dir():
-            continue
-        rel_path = path.relative_to(src)
-        rel_path_str = str(rel_path)
-        dest_path = os.path.join(dest, rel_path_str) if dest else rel_path_str
-        if diff_only and dest_path in uploaded_files:
-            continue
+    print(f"Found {len(uploaded_files)} existing files in destination for diffing")
+    files_to_upload = get_files_to_upload(rglobbed_files, uploaded_files, src, dest, diff_only)
+    print(f"Found {len(files_to_upload)} files to upload")
+    for path, dest_path in tqdm.tqdm(files_to_upload, desc="Uploading files"):
         bytes_data = path.read_bytes()
         write_bytes(dest_path, bytes_data)
         uploaded += 1
