@@ -19,7 +19,8 @@ def marc_to_jsonl(
     input_marc_xml_path: str, 
     output_jsonl_path: str
 ) -> None:
-    records: list[PymarcRecord] = parse_xml_to_array(str(input_marc_xml_path))
+    with open_file(input_marc_xml_path, 'r') as f:
+        records: list[PymarcRecord] = parse_xml_to_array(f)
     with open_file(output_jsonl_path, "w") as f:
         for record in tqdm.tqdm(records, desc="Converting to JSONL"):
             field_code_dict = convert_record_to_field_code_dict(record)
