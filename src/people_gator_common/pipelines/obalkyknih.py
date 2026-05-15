@@ -28,12 +28,18 @@ def run_obalkyknih_html_download_pipeline(
 def run_obalkyknih_html_parse_pipeline(
     html_dir: str,
     output_csv: str,
+    output_skipped_csv: str,
     *,
     show_progress: bool = True,
+    diff_only: bool = True,
+    num_workers: int = 4,
 ) -> pd.DataFrame:
     with logging_redirect_tqdm() if show_progress else nullcontext():
         return extract_previewimage_from_htmls(
             html_dir=html_dir,
             output_csv=output_csv,
+            output_skipped_csv=output_skipped_csv,
             show_progress=show_progress,
+            diff_only=diff_only,
+            num_workers=num_workers,
         )
