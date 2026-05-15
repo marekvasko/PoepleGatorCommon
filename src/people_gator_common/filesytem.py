@@ -8,18 +8,21 @@ from people_gator_common.settings import PeopleGatorSettings
 
 # Lazily-initialized filesystem instance
 fs: AbstractFileSystem | None = None
-
+prefix: str | None = None
 
 def _setup_filesystem() -> AbstractFileSystem:
     """Create and return the configured fsspec filesystem instance."""
-    global fs
+    global fs, prefix
     if fs is not None:
         return fs
 
     settings = PeopleGatorSettings()
     storage = settings.storage
     if storage.local.enabled:
+        if not storage.local.root:
+            raise ValueError("Local storage enabled but no root path specified")
         fs = LocalFileSystem()
+        prefix = os.path.abspath(storage.local.root)
         return fs
     if storage.s3.enabled:
         # import lazily to avoid hard dependency at import time
@@ -29,6 +32,7 @@ def _setup_filesystem() -> AbstractFileSystem:
             secret=storage.s3.secret_access_key,
             endpoint_url=storage.s3.endpoint_url,
         )
+        prefix = storage.s3.bucket
         return fs
     if storage.lakefs.enabled:
         from lakefs_spec import LakeFSFileSystem
@@ -42,32 +46,36 @@ def get_fs() -> AbstractFileSystem:
     """Return the configured fsspec filesystem (initializes lazily)."""
     return _setup_filesystem()
 
+def _realpath(path: str) -> str:
+    return os.path.join(prefix, path) if prefix else path
 
-def _to_str_path(path: str) -> str:
-    return str(path)
+def _relpath(path: str) -> str:
+    if prefix and path.startswith(prefix):
+        return os.path.relpath(path, prefix)
+    return path
 
 def exists(path: str) -> bool:
     fs = get_fs()
-    return fs.exists(_to_str_path(path))
+    return fs.exists(_realpath(path))
 
 def delete(path: str) -> None:
     fs = get_fs()
-    if fs.exists(_to_str_path(path)):
-        fs.delete(_to_str_path(path))
+    if fs.exists(_realpath(path)):
+        fs.delete(_realpath(path))
 
 def ls(path: str) -> list[str]:
     fs = get_fs()
-    return fs.ls(_to_str_path(path))
+    return [_relpath(p) for p in fs.ls(_realpath(path))]
 
 def glob(path: str) -> list[str]:
     fs = get_fs()
-    files = [str(p) for p in fs.glob(_to_str_path(path), detail=False)]
+    files = [_relpath(str(p)) for p in fs.glob(_realpath(path), detail=False)]
     return files
 
 def makedirs(path: str, exist_ok: bool = True) -> None:
     fs = get_fs()
     try:
-        fs.makedirs(_to_str_path(path), exist_ok=exist_ok)
+        fs.makedirs(_realpath(path), exist_ok=exist_ok)
     except Exception:
         # Some remote filesystems don't implement makedirs; ignore failures
         return
@@ -78,11 +86,10 @@ def ensure_parent_dir(path: str) -> None:
     This is a best-effort helper: local filesystems will create directories,
     object stores may no-op.
     """
-    parent = os.path.dirname(_to_str_path(path))
+    parent = os.path.dirname(path)
     if not parent:
         return
     makedirs(parent, exist_ok=True)
-    
 
 def open_file(path: str, mode: str = "rb", **kwargs) -> IO[Any]:
     """Open a file on the configured filesystem and return a file-like object.
@@ -91,25 +98,24 @@ def open_file(path: str, mode: str = "rb", **kwargs) -> IO[Any]:
     the underlying filesystem `open` implementation.
     """
     fs = get_fs()
-    delete(path)
-    return cast(IO[Any], fs.open(_to_str_path(path), mode=mode, **kwargs))
-
+    return cast(IO[Any], fs.open(_realpath(path), mode=mode, **kwargs))
 
 def read_text(path: str, encoding: str = "utf-8") -> str:
     with open_file(path, mode="r", encoding=encoding) as fh:
         return fh.read()
 
+def read_bytes(path: str) -> bytes:
+    with open_file(path, mode="rb") as fh:
+        return fh.read()
 
 def write_text(path: str, data: str, encoding: str = "utf-8") -> None:
     ensure_parent_dir(path)
-    delete(path)
     with open_file(path, mode="w", encoding=encoding) as fh:
         fh.write(data)
 
 
 def write_bytes(path: str, data: bytes) -> None:
     ensure_parent_dir(path)
-    delete(path)
     with open_file(path, mode="wb") as fh:
         fh.write(data)
 
@@ -122,6 +128,7 @@ __all__ = [
     "ensure_parent_dir",
     "open_file",
     "read_text",
+    "read_bytes",
     "write_text",
     "write_bytes",
 ]
