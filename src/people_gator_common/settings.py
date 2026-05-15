@@ -64,23 +64,6 @@ class PeopleGatorSettings(BaseSettings):
     )
     log_level: LOG_LEVEL = LOG_LEVEL.INFO
     storage: StorageSettings = StorageSettings()
-    wikidata_rate_limiter: RateLimiterSettings | None = RateLimiterSettings(
-        enabled=True,
-        max_retries=3,
-        retry_backoff_seconds=10.0,
-        min_request_interval=5.0,
-    )
-    wikicommons_rate_limiter: RateLimiterSettings | None = RateLimiterSettings(
-        enabled=True,
-        max_retries=3,
-        retry_backoff_seconds=5.0,
-        min_request_interval=1.0,
-    )
-    obalkyknih_html_rate_limiter: RateLimiterSettings | None = RateLimiterSettings(
-        max_retries=3,
-        retry_backoff_seconds=5.0,
-        min_request_interval=0.5,
-    )
 
 
 
