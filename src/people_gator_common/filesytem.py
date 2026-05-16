@@ -27,7 +27,7 @@ def _setup_filesystem() -> AbstractFileSystem:
     if len(enabled_types) == 0:
         raise ValueError("No storage type enabled in settings")
     if len(enabled_types) > 1:
-        raise ValueError(f"Multiple storage types enabled: {enabled_types}. Only one can be enabled at a time.")
+        raise ValueError(f"Multiple storage types enabled: {', '.join(enabled_types)}. Only one can be enabled at a time.")
     if storage.local.enabled:
         if not storage.local.root:
             raise ValueError("Local storage enabled but no root path specified")
