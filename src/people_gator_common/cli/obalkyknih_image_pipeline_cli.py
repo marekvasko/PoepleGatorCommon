@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 import pandas as pd
 from requests import Session
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from people_gator_common.crawling.fetchers import download_missing
 from os.path import join
@@ -105,7 +106,7 @@ def main() -> int:
         logger.error("CSV file %s must contain '%s' column", args.input_csv, args.image_column)
         return 1
     urls: list[str] = [ url for url in urls_df[args.image_column].dropna().astype(str).str.strip() if url  != "" ]
-    with Session() as session:
+    with Session() as session, logging_redirect_tqdm():
         session.headers.update(CLIENT_HEADERS)
         stats = download_missing(
             urls=urls,
