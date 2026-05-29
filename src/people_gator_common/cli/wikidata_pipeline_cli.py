@@ -13,8 +13,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-o",
         "--output-dir",
+        default="output/wikidata",
         type=str,
-        required=True,
         help="Directory to save output files.",
     )
     parser.add_argument(

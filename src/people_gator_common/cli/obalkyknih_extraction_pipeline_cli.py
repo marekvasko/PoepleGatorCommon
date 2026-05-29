@@ -10,26 +10,26 @@ from people_gator_common.rate_limiter import RateLimiter
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="CLI for ObalkyKnih HTML download pipeline.")
+    parser = argparse.ArgumentParser(description="CLI for ObalkyKnih HTML extraction pipeline.")
     parser.add_argument(
         "-i",
         "--input-dir",
         type=str,
-        default="output/unique_nl_cr_aut_id.csv",
-        help="CSV file containing NLCR AUT IDs.",
+        default="html/obalkyknih.cz",
+        help="Directory containing downloaded HTML files.",
     )
     parser.add_argument(
         "-o",
         "--output-csv",
         type=str,
-        required=True,
+        default="obalkyknih/previewimage.csv",
         help="CSV file to save extracted preview image URLs.",
     )
     parser.add_argument(
         "-s",
         "--output-skipped-csv",
         type=str,
-        required=True,
+        default="obalkyknih/non_existing_previewimage.csv",
         help="CSV file to save skipped entries.",
     )
     parser.add_argument(

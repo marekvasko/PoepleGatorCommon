@@ -14,7 +14,7 @@ def parse_args() -> argparse.Namespace:
         "-o",
         "--output-dir",
         type=Path,
-        required=True,
+        default=Path("nlcr_aut"),
         help="Directory to save output files.",
     )
     parser.add_argument(

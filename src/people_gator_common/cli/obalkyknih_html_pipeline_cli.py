@@ -15,14 +15,14 @@ def parse_args() -> argparse.Namespace:
         "-i",
         "--input-csv",
         type=str,
-        default="output/unique_nl_cr_aut_id.csv",
+        default="nlcr_aut/unique_control_numbers.csv",
         help="CSV file containing NLCR AUT IDs.",
     )
     parser.add_argument(
         "-o",
         "--output-dir",
         type=str,
-        required=True,
+        default="html",
         help="Directory to save downloaded HTML files.",
     )
     parser.add_argument(
