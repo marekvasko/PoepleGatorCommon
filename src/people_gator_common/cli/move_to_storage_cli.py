@@ -6,7 +6,7 @@ import argparse
 import os
 import tqdm
 
-from people_gator_common.filesytem import glob, write_bytes
+from people_gator_common.filesystem import glob, write_bytes
 
 def get_files_to_upload(
     local_files: list[Path],

@@ -10,8 +10,8 @@ from people_gator_common.headers import CLIENT_USER_AGENT
 from people_gator_common.rate_limiter import RateLimiter
 from people_gator_common.wikidata import create_people_of_all, fetch_property_values_for_entities
 from people_gator_common.wikidata.fetchers import fetch_people_of_property, fetch_texts_of_entities
-from people_gator_common.wikidata.processors import unique_values_from_csv
-from people_gator_common.filesytem import makedirs
+from people_gator_common.utils import unique_values_from_csv
+from people_gator_common.filesystem import makedirs
 from os.path import join
 
 
@@ -178,17 +178,10 @@ def run_wikidata_pipeline(
     *,
     receive_batch_size: int,
     send_batch_size: int,
-    rate_limit_interval: float,
-    rate_limit_retries: int,
-    rate_limit_backoff: float,
+    rate_limiter: RateLimiter,
 ) -> None:
     client = SPARQLWrapper("https://query.wikidata.org/sparql", agent=CLIENT_USER_AGENT)
     client.setMethod("POST")
-    rate_limiter = RateLimiter(
-        min_request_interval=rate_limit_interval,
-        max_retries=rate_limit_retries,
-        retry_backoff_seconds=rate_limit_backoff,
-    )
 
     makedirs(output_dir, exist_ok=True)
     _run_people_collectors(

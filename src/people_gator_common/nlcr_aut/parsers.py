@@ -116,9 +116,5 @@ def build_subfield_data_extractor(field_code: str, subfield_code: str) -> Callab
     return extractor
 
 
-def csv_escape(value: str) -> str:
-    if '"' in value:
-        value = value.replace('"', '""')
-    if ',' in value or '"' in value or '\n' in value:
-        value = f'"{value}"'
-    return value
+# csv_escape has moved to people_gator_common.utils
+from people_gator_common.utils import csv_escape as csv_escape  # re-export for backward compat

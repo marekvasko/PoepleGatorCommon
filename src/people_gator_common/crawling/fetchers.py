@@ -1,17 +1,17 @@
-from __future__ import annotations
-from collections.abc import Callable, Sequence
-import os
-from typing import Literal
-from requests import Session
-from people_gator_common.rate_limiter import RateLimiter, RateLimiterInstance, RateLimiterTooManyRequestsError
-from people_gator_common.errors import is_retryable_error
-from people_gator_common.filesytem import ensure_parent_dir, glob, write_text, write_bytes
-import logging
-import tqdm
-from dataclasses import dataclass
-import mimetypes
+# Backward-compatibility shim — import from people_gator_common.transport.fetchers instead.
+from people_gator_common.transport.fetchers import *  # noqa: F401, F403
+from people_gator_common.transport.fetchers import (
+    BatchDownloadStats,
+    PathFunc,
+    download_missing,
+    download_url,
+    split_urls_by_existing_files,
+    get_existing_files_in_output_dir,
+    get_expected_file_locations,
+    enforce_path_extension_from_mimetype,
+    single_download_attempt,
+)
 
-type PathFunc = Callable[[str, str], str | None]
 
 @dataclass(frozen=True, slots=True)
 class BatchDownloadStats:

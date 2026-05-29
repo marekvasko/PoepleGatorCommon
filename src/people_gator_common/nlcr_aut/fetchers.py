@@ -1,9 +1,7 @@
-from __future__ import annotations
+# Backward-compatibility shim — import from people_gator_common.transport.marc21 instead.
+from people_gator_common.transport.marc21 import *  # noqa: F401, F403
+from people_gator_common.transport.marc21 import download_and_extract_marc2021
 
-import pathlib
-from people_gator_common.filesytem import ensure_parent_dir, open_file
-import requests
-import tqdm
 
 def download_and_extract_marc2021(url: str, output_path: str):
     ensure_parent_dir(output_path)

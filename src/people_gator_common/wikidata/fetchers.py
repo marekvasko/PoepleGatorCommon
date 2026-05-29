@@ -5,9 +5,9 @@ import logging
 from pathlib import Path
 import pandas as pd
 from SPARQLWrapper import SPARQLWrapper
-from people_gator_common.filesytem import open_file, ensure_parent_dir
+from people_gator_common.filesystem import open_file, ensure_parent_dir
 
-from .sparql_client import (
+from people_gator_common.transport.sparql import (
     rate_limited_query_all,
     rate_limited_query_all_cursor,
     rate_limited_query_entities,

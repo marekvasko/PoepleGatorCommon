@@ -8,10 +8,10 @@ from requests import Session
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from people_gator_common.headers import CLIENT_HEADERS
-from people_gator_common.crawling.images import download_missing_images
-from people_gator_common.crawling.fetchers import BatchDownloadStats
+from people_gator_common.transport.images import download_missing_images
+from people_gator_common.transport.fetchers import BatchDownloadStats
 from people_gator_common.rate_limiter import RateLimiter
-from people_gator_common.filesytem import open_file
+from people_gator_common.filesystem import open_file
 
 def _extract_image_urls_from_csv(image_csv: str, *, url_column: str) -> list[str]:
     with open_file(image_csv, "r") as f:

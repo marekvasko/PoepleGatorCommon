@@ -6,9 +6,9 @@ import pandas as pd
 from pathlib import Path
 
 from requests import Session
-from people_gator_common.crawling import download_missing_html, BatchDownloadStats
-from people_gator_common.filesytem import open_file
-from people_gator_common.pipelines.wikicommons import CLIENT_HEADERS
+from people_gator_common.transport import download_missing_html, BatchDownloadStats
+from people_gator_common.filesystem import open_file
+from people_gator_common.headers import CLIENT_HEADERS
 from people_gator_common.rate_limiter import RateLimiter
 from tqdm.contrib.logging import logging_redirect_tqdm
 

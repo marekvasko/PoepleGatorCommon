@@ -1,15 +1,7 @@
-from __future__ import annotations
-from collections.abc import Sequence
-import logging
-import os
-from pathlib import Path
-from requests import Session
-from people_gator_common.rate_limiter import RateLimiter
-from people_gator_common.crawling.fetchers import (
-    download_missing,
-    BatchDownloadStats
-)
-from urllib.parse import urlparse, unquote
+# Backward-compatibility shim — import from people_gator_common.transport.html instead.
+from people_gator_common.transport.html import *  # noqa: F401, F403
+from people_gator_common.transport.html import derive_html_path, download_missing_html
+
 
 
 def derive_html_path(url: str, save_root: str) -> str | None:

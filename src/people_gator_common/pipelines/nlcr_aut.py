@@ -9,8 +9,8 @@ from people_gator_common.nlcr_aut import (
     build_field_data_extractor,
     build_subfield_data_extractor,
 )
-from people_gator_common.wikidata.processors import unique_values_from_csv
-from people_gator_common.filesytem import makedirs
+from people_gator_common.utils import unique_values_from_csv
+from people_gator_common.filesystem import makedirs
 from os.path import join
 
 def run_nlcr_pipeline(

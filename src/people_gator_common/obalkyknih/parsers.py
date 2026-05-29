@@ -5,11 +5,11 @@ import os
 from bs4 import BeautifulSoup
 from bs4.filter import SoupStrainer
 import pandas as pd
-from people_gator_common.filesytem import ensure_parent_dir, exists, glob, open_file, read_text
+from people_gator_common.filesystem import ensure_parent_dir, exists, glob, open_file, read_text
 from tqdm import tqdm
 from multiprocessing import Pool
 
-from people_gator_common.nlcr_aut.io import csv_escape
+from people_gator_common.utils import csv_escape
 
 def extract_previewimage_from_html(
     path: str

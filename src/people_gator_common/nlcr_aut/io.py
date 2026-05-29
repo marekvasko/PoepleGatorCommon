@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from people_gator_common.filesytem import open_file
+from people_gator_common.filesystem import open_file
 import tqdm
 from collections.abc import Callable
 from pymarc import (
@@ -13,7 +13,8 @@ from people_gator_common.nlcr_aut.types import (
     FieldCodeDataDictType,
     ExtractedInformation,
 )
-from people_gator_common.nlcr_aut.parsers import convert_record_to_field_code_dict, csv_escape
+from people_gator_common.nlcr_aut.parsers import convert_record_to_field_code_dict
+from people_gator_common.utils import csv_escape
 
 def marc_to_jsonl(
     input_marc_xml_path: str, 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..rate_limiter import RateLimiter, RateLimiterTooManyRequestsError
-from .sparql_client import (
+from people_gator_common.transport.sparql import (
     chunked,
     execute_sparql_query,
     parse_sparql_results,

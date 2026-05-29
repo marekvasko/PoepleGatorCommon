@@ -3,7 +3,8 @@ import logging
 from pathlib import Path
 import pandas as pd
 
-from people_gator_common.filesytem import ensure_parent_dir, open_file, glob
+from people_gator_common.filesystem import open_file, glob
+from people_gator_common.utils import unique_values_from_csv as unique_values_from_csv  # re-export
 from os.path import join
 
 
@@ -27,23 +28,4 @@ def create_people_of_all(*, output_dir: str, input_csvs_glob: str, output_file: 
     return combined_df
 
 
-def unique_values_from_csv(
-    source_csv: str,
-    target_csv: str,
-    values_column: str = "value",
-    new_column_name: str = "entity",
-) -> pd.DataFrame:
-    logger = logging.getLogger(__name__ + "." + unique_values_from_csv.__name__)
-    with open_file(source_csv, "r") as f:
-        df = pd.read_csv(f)
-    logger.debug("Read %d rows from source CSV %s", len(df), source_csv)
-    unique_values_df = df[[values_column]].drop_duplicates().sort_values(by=values_column).reset_index(drop=True)
-    unique_values_df.columns = [new_column_name]
-    logger.debug("Extracted %d unique values from column %s in source CSV %s", len(unique_values_df), values_column, source_csv)
 
-    ensure_parent_dir(target_csv)
-    with open_file(target_csv, "w", encoding="utf-8") as f:
-        unique_values_df.to_csv(f, index=False)
-    logger.info("Saved %d unique values to %s", len(unique_values_df), target_csv)
-
-    return unique_values_df

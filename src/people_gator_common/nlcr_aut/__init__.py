@@ -1,4 +1,4 @@
-from .fetchers import download_and_extract_marc2021
+from people_gator_common.transport.marc21 import download_and_extract_marc2021
 from .identifiers import (
     print_tags_and_subfields,
     field_subfield_to_names,

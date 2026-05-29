@@ -6,8 +6,8 @@ import logging
 from typing import TypeAlias, cast
 import pandas as pd
 from SPARQLWrapper import JSON, SPARQLWrapper
-from ..rate_limiter import RateLimiter, RateLimiterInstance, RateLimiterTooManyRequestsError
-from ..errors import (
+from people_gator_common.rate_limiter import RateLimiter, RateLimiterInstance, RateLimiterTooManyRequestsError
+from people_gator_common.errors import (
     is_retryable_error
 )
 
