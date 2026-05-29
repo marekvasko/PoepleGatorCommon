@@ -9,9 +9,9 @@ from people_gator_common.pipelines.wikicommons import run_wikicommons_images_dow
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CLI for Wikicommons image download pipeline.")
-    parser.add_argument("--input-csv", type=str, default="output/people_all_P18.csv", help="CSV file containing image URLs.")
+    parser.add_argument("-i", "--input-csv", type=str, default="wikidata/people_all_P18.csv", help="CSV file containing image URLs.")
+    parser.add_argument("-o", "--output-dir", type=str, default="images", help="Directory to save output files.")
     parser.add_argument("--url-column", type=str, default="value", help="Column name in --input-csv containing image URLs.")
-    parser.add_argument("-o", "--output-dir", type=str, required=True, help="Directory to save output files.")
     parser.add_argument("--hide-progress", action="store_true", help="Disable tqdm progress bar output.")
     parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
     add_rate_limiter_args(parser, default_interval=5.0, default_retries=5, default_backoff=15.0)
