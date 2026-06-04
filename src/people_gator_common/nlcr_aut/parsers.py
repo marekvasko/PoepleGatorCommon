@@ -115,6 +115,11 @@ def build_subfield_data_extractor(field_code: str, subfield_code: str) -> Callab
 
     return extractor
 
-
-# csv_escape has moved to people_gator_common.utils
-from people_gator_common.utils import csv_escape as csv_escape  # re-export for backward compat
+def name_reparser(name: str) -> str:
+    # Reparse names from "Last, First" to "First Last"
+    if "," not in name:
+        return name
+    parts = [part.strip() for part in name.split(",")]
+    if len(parts) != 3:
+        return name
+    return f"{parts[1]} {parts[0]}"

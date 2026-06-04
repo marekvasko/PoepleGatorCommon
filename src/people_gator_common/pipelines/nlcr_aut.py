@@ -9,6 +9,8 @@ from people_gator_common.nlcr_aut import (
     build_field_data_extractor,
     build_subfield_data_extractor,
 )
+from people_gator_common.nlcr_aut.io import csv_reparser
+from people_gator_common.nlcr_aut.parsers import name_reparser
 from people_gator_common.utils import unique_values_from_csv
 from people_gator_common.filesystem import makedirs
 from os.path import join
@@ -33,6 +35,8 @@ def run_nlcr_pipeline(
     death_dates_csv_path = join(output_dir, "nlcr_aut__death_dates.csv")
     birth_dates_csv_path = join(output_dir, "nlcr_aut__birth_dates.csv")
     unique_control_numbers_csv_path = join(output_dir, "unique_control_numbers.csv")
+    reparsed_person_names_csv_path = join(output_dir, "nlcr_aut__person_names_reparsed.csv")
+    reparsed_also_known_as_csv_path = join(output_dir, "nlcr_aut__also_known_as_reparsed.csv")
 
     logger.info("Downloading NLCR personal authorities from %s", personal_authorities_link)
     download_and_extract_marc2021(personal_authorities_link, downloaded_xml_path)
@@ -69,3 +73,11 @@ def run_nlcr_pipeline(
     # Deduplicate control numbers
     logger.info("Creating unique control numbers CSV")
     unique_values_from_csv(control_numbers_csv_path, unique_control_numbers_csv_path)
+    
+    # Convert names to from: "Surname, Name," to "Name Surname"
+    logger.info("Converting person names to 'Name Surname' format in %s", person_names_csv_path)
+    csv_reparser(person_names_csv_path, reparsed_person_names_csv_path, name_reparser)
+    
+    # Convert alternative names to "Name Surname" format
+    logger.info("Converting also known as names to 'Name Surname' format in %s", also_known_as_csv_path)
+    csv_reparser(also_known_as_csv_path, reparsed_also_known_as_csv_path, name_reparser)

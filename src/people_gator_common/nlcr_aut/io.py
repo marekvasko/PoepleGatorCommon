@@ -77,3 +77,18 @@ def jsonl_information_extractor(
             extracted_information = information_extractor(field_code_dict)
             for info in extracted_information:
                 fo.write(f"{csv_escape(info['entity'])},{csv_escape(info['value'])}\n")
+
+def csv_reparser(
+    input_csv_path: str,
+    output_csv_path: str,
+    csv_reparser_function: Callable[[str], str],
+) -> None:
+    with open_file(input_csv_path, 'r') as fi, open_file(output_csv_path, 'w') as fo:
+        header = fi.readline()
+        fo.write(header)
+        for line in tqdm.tqdm(fi, desc="Reparsing CSV"):
+            entity, value = line.strip().split(",", 1)
+            reparsed_value = csv_reparser_function(value)
+            fo.write(
+                f"{entity},{csv_escape(reparsed_value)}\n"
+            )
