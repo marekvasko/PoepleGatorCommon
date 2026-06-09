@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--send-batch-size",
         type=int,
-        default=10_000,
+        default=30_000,
         help="Batch size for SPARQL enrichment queries (entity batch pagination).",
     )
     add_rate_limiter_args(parser, default_interval=1.0, default_retries=5, default_backoff=15.0)
