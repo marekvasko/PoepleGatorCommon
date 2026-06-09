@@ -6,6 +6,7 @@ import logging
 from typing import TypeAlias, cast
 import pandas as pd
 from SPARQLWrapper import JSON, SPARQLWrapper
+from people_gator_common.filesystem import open_file
 from people_gator_common.rate_limiter import RateLimiter, RateLimiterInstance, RateLimiterTooManyRequestsError
 from people_gator_common.errors import (
     is_retryable_error
@@ -89,6 +90,7 @@ def execute_sparql_query(
 
 def rate_limited_query_all(
     query_builder: Callable[[int, int], str],
+    partial_results_dir: str | None,
     *,
     client: SPARQLWrapper,
     limit: int,
@@ -101,7 +103,6 @@ def rate_limited_query_all(
 
     while True:
         query = query_builder(limit, offset)
-
         try:
             json_result = execute_sparql_query(
                 client=client,
@@ -115,7 +116,11 @@ def rate_limited_query_all(
         df = parse_sparql_results(json_result)
         if df.empty:
             break
-
+        if partial_results_dir is not None:
+            batch_file = f"{partial_results_dir}/results_offset_{offset}.csv"
+            with open_file(batch_file, "w", encoding="utf-8") as f:
+                df.to_csv(f, index=False)
+            logger.info("Saved partial results for offset %d to %s", offset, batch_file)
         dataframes.append(df)
         offset += limit
 
@@ -126,6 +131,7 @@ def rate_limited_query_all(
 
 def rate_limited_query_all_cursor(
     query_builder: Callable[[str, int], str],
+    partial_results_dir: str | None,
     *,
     client: SPARQLWrapper,
     limit: int,
@@ -151,7 +157,11 @@ def rate_limited_query_all_cursor(
         df = parse_sparql_results(json_result)
         if df.empty:
             break
-
+        if partial_results_dir is not None:
+            partial_file = f"{partial_results_dir}/results_after_{after_id.split('/')[-1]}.csv"
+            with open_file(partial_file, "w", encoding="utf-8") as f:
+                df.to_csv(f, index=False)
+            logger.info("Saved partial results to %s", partial_file)
         dataframes.append(df)
         after_id = df["entity"].iloc[-1]
 
@@ -163,6 +173,7 @@ def rate_limited_query_all_cursor(
 def rate_limited_query_entities(
     entities: list[str],
     query_builder: Callable[[list[str]], str],
+    partial_results_dir: str | None,
     *,
     client: SPARQLWrapper,
     batch_size: int,
@@ -179,8 +190,14 @@ def rate_limited_query_entities(
             rate_limiter=rate_limiter,
         )
         df = parse_sparql_results(json_result)
-        if not df.empty:
-            rows.append(df)
+        if df.empty:
+            continue
+        if partial_results_dir is not None:
+            batch_file = f"{partial_results_dir}/results_batch_{batch_index}.csv"
+            with open_file(batch_file, "w", encoding="utf-8") as f:
+                df.to_csv(f, index=False)
+            logger.info("Saved partial results for batch %d to %s", batch_index, batch_file)
+        rows.append(df)
         logger.info("Processed property batch %d with %d entities", batch_index, len(batch))
 
     if rows:

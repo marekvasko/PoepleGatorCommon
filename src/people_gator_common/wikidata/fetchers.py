@@ -18,6 +18,10 @@ from .queries import (
     build_people_of_property_cursor_query,
     build_property_query_builder,
     build_text_query_builder,
+    build_all_people_query,
+    build_all_people_cursor_query,
+    build_all_character_query,
+    build_all_character_cursor_query,
 )
 
 def extract_entity_id(entity_uri: str) -> str:
@@ -40,6 +44,7 @@ def fetch_property_values_for_entities(
     property_id: str,
     entities_csv_path: str,
     output_file: str,
+    partial_results_dir: str | None,
     *,
     client: SPARQLWrapper,
     batch_size: int,
@@ -51,6 +56,7 @@ def fetch_property_values_for_entities(
     query_builder = build_property_query_builder(property_id)
     properties_df = rate_limited_query_entities(
         entities=entities,
+        partial_results_dir=partial_results_dir,
         query_builder=query_builder,
         client=client,
         batch_size=batch_size,
@@ -72,6 +78,7 @@ def fetch_texts_of_entities(
     text_property: Literal["labels", "descriptions", "alt_labels"],
     entities_csv_path: str,
     output_file: str,
+    partial_results_dir: str | None,
     *,
     client: SPARQLWrapper,
     batch_size: int,
@@ -83,6 +90,7 @@ def fetch_texts_of_entities(
     query_builder: Callable[[list[str]], str] = build_text_query_builder(text_property)
     labels_df = rate_limited_query_entities(
         entities=entities,
+        partial_results_dir=partial_results_dir,
         query_builder=query_builder,
         client=client,
         batch_size=batch_size,
@@ -100,11 +108,51 @@ def fetch_texts_of_entities(
     )
     return labels_df
 
+def fetch_all_entities_by_query(
+    output_file: str,
+    partial_results_dir: str | None,
+    query_builder: Callable[[int, int], str] | None,
+    cursor_query_builder: Callable[[str, int], str] | None,
+    *,
+    client: SPARQLWrapper,
+    batch_size: int,
+    use_cursor: bool,
+    rate_limiter: RateLimiter,
+) -> pd.DataFrame:
+    logger = logging.getLogger(__name__ + "." + fetch_all_entities_by_query.__name__)
+    if use_cursor and cursor_query_builder is not None:
+        df = rate_limited_query_all_cursor(
+            cursor_query_builder,
+            partial_results_dir=partial_results_dir,
+            client=client,
+            limit=batch_size,
+            rate_limiter=rate_limiter,
+        )
+    elif not use_cursor and query_builder is not None:
+        df = rate_limited_query_all(
+            query_builder,
+            partial_results_dir=partial_results_dir,
+            client=client,
+            limit=batch_size,
+            initial_offset=0,
+            rate_limiter=rate_limiter,
+        )
+    else:
+        raise ValueError("Must provide appropriate query builders for the chosen query method")
+    df = df.sort_values(by="entity").drop_duplicates().reset_index(drop=True)
+    save_to_csv_if_applicable(df, output_file)
+    logger.info(
+        "Fetched %d entities for all people (use_cursor=%s)",
+        len(df),
+        use_cursor,
+    )
+    return df
 
 def fetch_people_of_property(
     property_id: str,
     value_id: str,
     output_file: str,
+    partial_results_dir: str | None,
     *,
     client: SPARQLWrapper,
     batch_size: int,
@@ -121,6 +169,7 @@ def fetch_people_of_property(
                 after_id=after_id,
                 limit=limit,
             ),
+            partial_results_dir=partial_results_dir,
             client=client,
             limit=batch_size,
             rate_limiter=rate_limiter,
@@ -133,6 +182,7 @@ def fetch_people_of_property(
                 limit=limit,
                 offset=offset,
             ),
+            partial_results_dir=partial_results_dir,
             client=client,
             limit=batch_size,
             initial_offset=0,

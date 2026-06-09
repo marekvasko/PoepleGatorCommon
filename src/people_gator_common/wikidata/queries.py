@@ -40,6 +40,51 @@ LIMIT {limit}
 OFFSET {offset}
 """.strip()
 
+def build_all_people_query(*, limit: int, offset: int) -> str:
+    return f"""
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?entity WHERE {{
+  ?entity wdt:P31 wd:Q5 .
+}}
+LIMIT {limit}
+OFFSET {offset}
+""".strip()
+
+def build_all_people_cursor_query(*, after_id: str, limit: int) -> str:
+    return f"""
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?entity WHERE {{
+  ?entity wdt:P31 wd:Q5 .
+  FILTER (STR(?entity) > "{after_id}")
+}}
+ORDER BY ?entity
+LIMIT {limit}
+""".strip()
+
+def build_all_character_query(*, limit: int, offset: int) -> str:
+    return f"""
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?entity WHERE {{
+  ?entity wdt:P31/wdt:P279* wd:Q95074 .
+}}
+LIMIT {limit}
+OFFSET {offset}
+""".strip()
+
+def build_all_character_cursor_query(*, after_id: str, limit: int) -> str:
+    return f"""
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?entity WHERE {{
+  ?entity wdt:P31/wdt:P279* wd:Q95074 .
+  FILTER (STR(?entity) > "{after_id}")
+}}
+ORDER BY ?entity
+LIMIT {limit}
+""".strip()
 
 def build_people_of_property_cursor_query(*, property_id: str, value_id: str, after_id: str, limit: int) -> str:
     return f"""

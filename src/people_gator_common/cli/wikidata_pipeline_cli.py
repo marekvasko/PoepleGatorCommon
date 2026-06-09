@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--receive-batch-size",
         type=int,
-        default=40_000,
+        default=300_000,
         help="Batch size for SPARQL collector queries.",
     )
     parser.add_argument(
@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
         default=10_000,
         help="Batch size for SPARQL enrichment queries.",
     )
-    add_rate_limiter_args(parser, default_interval=5.0, default_retries=5, default_backoff=15.0)
+    add_rate_limiter_args(parser, default_interval=1.0, default_retries=5, default_backoff=15.0)
     return parser.parse_args()
 
 

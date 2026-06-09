@@ -68,10 +68,10 @@ def exists(path: str) -> bool:
     fs = get_fs()
     return fs.exists(_realpath(path))
 
-def delete(path: str) -> None:
+def delete(path: str, recursive: bool = False) -> None:
     fs = get_fs()
     if fs.exists(_realpath(path)):
-        fs.delete(_realpath(path))
+        fs.delete(_realpath(path), recursive=recursive)
 
 def ls(path: str) -> list[str]:
     fs = get_fs()
