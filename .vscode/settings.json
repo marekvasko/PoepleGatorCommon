@@ -1,5 +1,9 @@
 {
     "chat.tools.terminal.autoApprove": {
-        "uv": true
+        "uv": true,
+        "/^cd /mnt/backup/PeopleGator/people-gator-common && python -c \"from people_gator_common\\.wikidata_v2 import plan_wikidata_pipeline, execute_manifest, merge_manifest_results; print\\('All imports OK'\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }
