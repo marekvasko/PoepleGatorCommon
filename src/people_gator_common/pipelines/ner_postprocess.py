@@ -17,14 +17,13 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-import yaml
 from openai import OpenAI
 from rapidfuzz import fuzz
 from rapidfuzz.process import extractOne
 from recordlinkage.preprocessing import clean
 from sklearn.cluster import DBSCAN
 
-from people_gator_common.filesystem import exists, makedirs, open_file
+from people_gator_common.filesystem import exists, makedirs, open_file, glob as fs_glob
 
 logger = logging.getLogger(__name__)
 
@@ -351,61 +350,71 @@ When the evidence is ambiguous or merely missing (vague descriptions, compatible
 # Output requirements
 - Every input EntityId must appear in exactly one UniqueEntity. Do not invent, drop, or duplicate Ids.
 - Number UniqueEntityIds sequentially starting from 1.
-- CommonDescription: a few sentences, written in the same language as the input descriptions, merging the non-contradictory information from all member entities. For a singleton UniqueEntity, restate its description concisely. Do not refer to the entity as a "person" unless it actually is one. Avoid using the ":" character to comply with YAML.
+- CommonDescription: a few sentences, written in the same language as the input descriptions, merging the non-contradictory information from all member entities. For a singleton UniqueEntity, restate its description concisely. Do not refer to the entity as a "person" unless it actually is one.
 - ShortDescription: basic reduced information useful for entity identification, e.g. for people: occupation, gender, citizenship, interesting facts, etc.
-- Output ONLY the YAML block below. No explanations, no text before or after it.
+- Output ONLY a single JSON object. No explanations, no text before or after it.
 
 # Example output
-```yaml
-UniqueEntities:
-  - EntityIds: [1, 2, 3]
-    ShortDescription: "Basic reduced information useful for entity identification, e.g. for people: occupation, gender, citizenship, interesting facts, etc."
-    CommonDescription: Merged summary of the cluster members' descriptions containing all information from source entities.
-    CommonName: Most complete name variant all parts, no titles.
-  - EntityIds: [4]
-    ShortDescription: "Basic reduced information useful for entity identification, e.g. for people: occupation, gender, citizenship, interesting facts, etc."
-    CommonDescription: Concise restatement of entity 4's description.
-    CommonName: Most complete name.
+```json
+{{
+  "UniqueEntities": [
+    {{
+      "EntityIds": [1, 2, 3],
+      "ShortDescription": "Basic reduced information useful for entity identification, e.g. for people: occupation, gender, citizenship, interesting facts, etc.",
+      "CommonDescription": "Merged summary of the cluster members' descriptions containing all information from source entities.",
+      "CommonName": "Most complete name variant all parts, no titles."
+    }},
+    {{
+      "EntityIds": [4],
+      "ShortDescription": "Basic reduced information useful for entity identification, e.g. for people: occupation, gender, citizenship, interesting facts, etc.",
+      "CommonDescription": "Concise restatement of entity 4's description.",
+      "CommonName": "Most complete name."
+    }}
+  ]
+}}
 ```
 
 # Input Entities
-```yaml
+```json
 {entities}
 ```
 """
 
 
-def _original_to_entity_yaml(originals: list[dict[str, Any]]) -> str:
-    """Format a list of entity dicts into YAML for the LLM prompt."""
-    text = "Entities:\n"
+def _original_to_entity_json(originals: list[dict[str, Any]]) -> str:
+    """Format a list of entity dicts into JSON for the LLM prompt."""
+    entities: list[dict[str, Any]] = []
     for i, entity in enumerate(originals, start=1):
-        text += f"  - EntityId: {i}\n"
-        text += f"    Name: {entity['entity']}\n"
-        text += f"    Variants: [{', '.join(f'\"{v}\"' for v in entity['variants'])}]\n"
-        text += f"    Description: {entity['information']}\n"
-    return text
+        entities.append({
+            "EntityId": i,
+            "Name": entity["entity"],
+            "Variants": entity["variants"],
+            "Description": entity["information"],
+        })
+    return json.dumps({"Entities": entities}, ensure_ascii=False, indent=2)
 
 
-def _parse_llm_yaml_response(content: str) -> dict[str, Any]:
-    """Extract and parse YAML from an LLM response, with fallback."""
+def _parse_llm_json_response(content: str) -> dict[str, Any]:
+    """Extract and parse JSON from an LLM response, with fallback."""
     content = content.strip()
-    match = re.search(r"```(?:yaml)?\s*(.*?)\s*```", content, flags=re.DOTALL | re.IGNORECASE)
+    # Strip markdown code fences if present
+    match = re.search(r"```(?:json)?\s*(.*?)\s*```", content, flags=re.DOTALL | re.IGNORECASE)
     if match:
         content = match.group(1).strip()
     try:
-        return yaml.safe_load(content)  # type: ignore[no-any-return]
-    except yaml.YAMLError as exc:
-        logger.warning("YAML parse error: %s", exc)
+        return json.loads(content)  # type: ignore[no-any-return]
+    except json.JSONDecodeError as exc:
+        logger.warning("JSON parse error: %s", exc)
         return {"UniqueEntities": []}
 
 
 def _call_llm_disambiguate(
     client: OpenAI,
     model: str,
-    entity_yaml: str,
+    entity_json: str,
 ) -> tuple[str, int, int]:
     """Call the LLM for disambiguation and return (response_text, prompt_tokens, completion_tokens)."""
-    user_prompt = DISAMBIGUATION_PROMPT_TEMPLATE.format(entities=entity_yaml)
+    user_prompt = DISAMBIGUATION_PROMPT_TEMPLATE.format(entities=entity_json)
     chat_response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": user_prompt}],
@@ -438,7 +447,7 @@ def llm_link_ner(
     input_dir
         Directory with soft-link JSONL files (from :func:`soft_link_ner`).
     output_dir
-        Directory for per-document LLM-linked YAML outputs.
+        Directory for per-document LLM-linked JSON outputs.
     api_key
         OpenRouter API key.
     model
@@ -462,12 +471,12 @@ def llm_link_ner(
     total_prompt_tokens = 0
     total_completion_tokens = 0
 
-    cluster_files = sorted(glob(os.path.join(input_dir, f"*__{entity_type}.jsonl")))
+    cluster_files = sorted(fs_glob(os.path.join(input_dir, f"*__{entity_type}.jsonl")))
     logger.info("Found %d cluster files for type %s", len(cluster_files), entity_type)
 
     for cluster_file in cluster_files:
         doc_id = os.path.basename(cluster_file).split("__")[0]
-        output_path = os.path.join(output_dir, f"{doc_id}__{entity_type}.yaml")
+        output_path = os.path.join(output_dir, f"{doc_id}__{entity_type}.json")
 
         if exists(output_path) and not force:
             logger.info("Output for document %s already exists, skipping", doc_id)
@@ -488,23 +497,24 @@ def llm_link_ner(
         for cluster in clusters:
             # Optimization: skip singletons
             if skip_singletons and len(cluster) == 1:
-                entity_yaml = _original_to_entity_yaml(cluster)
+                entity_json = _original_to_entity_json(cluster)
                 # Synthesize a trivial "cluster" response for the singleton
-                singleton_yaml = (
-                    "UniqueEntities:\n"
-                    f"  - EntityIds: [1]\n"
-                    f"    ShortDescription: \"{cluster[0]['information'][:120]}\"\n"
-                    f"    CommonDescription: {cluster[0]['information']}\n"
-                    f"    CommonName: {cluster[0]['entity']}\n"
-                )
-                responses.append(singleton_yaml)
-                parsed_originals.append(yaml.safe_load(entity_yaml))
+                singleton_data = {
+                    "UniqueEntities": [{
+                        "EntityIds": [1],
+                        "ShortDescription": cluster[0]["information"],
+                        "CommonDescription": cluster[0]["information"],
+                        "CommonName": cluster[0]["entity"],
+                    }]
+                }
+                responses.append(json.dumps(singleton_data, ensure_ascii=False))
+                parsed_originals.append(json.loads(entity_json))
                 continue
 
-            entity_yaml = _original_to_entity_yaml(cluster)
-            parsed_originals.append(yaml.safe_load(entity_yaml))
+            entity_json = _original_to_entity_json(cluster)
+            parsed_originals.append(json.loads(entity_json))
 
-            response_text, pt, ct = _call_llm_disambiguate(client, model, entity_yaml)
+            response_text, pt, ct = _call_llm_disambiguate(client, model, entity_json)
             responses.append(response_text)
             total_prompt_tokens += pt
             total_completion_tokens += ct
@@ -518,7 +528,7 @@ def llm_link_ner(
         cluster_idx = 0
         cleaned_clusters: list[dict[str, Any]] = []
         for response_str, parsed_original in zip(responses, parsed_originals):
-            parsed_response = _parse_llm_yaml_response(response_str)
+            parsed_response = _parse_llm_json_response(response_str)
             entity_map: dict[int, dict[str, Any]] = {}
             if parsed_original and "Entities" in parsed_original:
                 entity_map = {e["EntityId"]: e for e in parsed_original["Entities"]}
@@ -568,10 +578,10 @@ def llm_link_ner(
                 cleaned_clusters.append(cleaned_cluster)
 
         output_data = {"Clusters": cleaned_clusters}
-        output_yaml = yaml.dump(output_data, allow_unicode=True, sort_keys=False)
+        output_json = json.dumps(output_data, ensure_ascii=False, indent=2)
 
         with open_file(output_path, "w") as f:
-            f.write(output_yaml)
+            f.write(output_json)
 
         logger.info(
             "Wrote %d merged clusters for document %s to %s",
