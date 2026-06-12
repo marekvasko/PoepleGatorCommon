@@ -195,7 +195,8 @@ def collect_results(
 
     dataframes: list[pd.DataFrame] = []
     for frame_name in sorted(completed):
-        df = pd.read_csv(os.path.join(tmp_dir, frame_name))
+        with open_file(os.path.join(tmp_dir, frame_name), "r", encoding="utf-8") as f:
+            df = pd.read_csv(f)
         dataframes.append(df)
 
     if dataframes:

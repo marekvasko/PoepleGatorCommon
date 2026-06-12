@@ -47,12 +47,16 @@ PROPERTY_ALT_LABEL = "skos:altLabel"
 
 class EnricherTask(TaskModel):
     total: int
+    batch_start: int
+    batch_end: int
     entities: list[str]
 
     @property
     def frame_name(self) -> str:
+        batch_start_str = str(self.batch_start).zfill(len(str(self.total)))
+        batch_end_str = str(self.batch_end).zfill(len(str(self.total)))
         entity_hash = hashlib.sha256(",".join(sorted(self.entities)).encode()).hexdigest()[:16]
-        return f"{self.name}_{entity_hash}.csv"
+        return f"{self.name}__total={self.total}__batch_start={batch_start_str}__batch_end={batch_end_str}__hash={entity_hash}.csv"
 
 
 class EnricherManifest(ManifestModel):
@@ -164,12 +168,13 @@ def init_enricher_manifest(
     tasks = [
         EnricherTask(
             name=task_name,
-            command=query_builder(batch_entities),
+            command=query_builder(entities[i : i + batch_size]),
             total=len(entities),
-            entities=batch_entities,
+            batch_start=i,
+            batch_end=i + len(entities[i : i + batch_size]) - 1,
+            entities=entities[i : i + batch_size],
         )
         for i in range(0, len(entities), batch_size)
-        for batch_entities in [entities[i : i + batch_size]]
     ]
     manifest = EnricherManifest(
         output_file=f"{task_name}.csv",
