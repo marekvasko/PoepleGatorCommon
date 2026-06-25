@@ -36,6 +36,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "sparqlwrapper>=2.0.0",
     "tqdm>=4.67.3",
+    "opentelemetry-sdk>=1.42.1",
 ]
 
 [project.scripts]
