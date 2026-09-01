@@ -12,7 +12,6 @@ import os
 from collections.abc import Callable
 
 from SPARQLWrapper import SPARQLWrapper
-from pydantic import BaseModel
 
 from people_gator_common.rate_limiter import RateLimiter
 from people_gator_common.wikidata_v2.common import (

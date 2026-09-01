@@ -1,39 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import logging
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import StrEnum
-import uuid
 
 import fsspec
-from pydantic import AnyUrl
-from pydantic import BaseModel
-from pydantic import TypeAdapter
-import weaviate
-from weaviate import WeaviateAsyncClient
-from weaviate.classes.init import Auth
-from weaviate.classes.query import Filter
-from weaviate.collections.classes.types import WeaviateField
+import httpx
+from pydantic import AnyUrl, BaseModel, TypeAdapter
 
 from people_gator_common.filesystem import exists as storage_exists
 from people_gator_common.filesystem import open_file as storage_open_file
 
 logger = logging.getLogger(__name__)
 
-type MutableProperties = dict[str, WeaviateField]
-
 ANY_URL_ADAPTER = TypeAdapter(AnyUrl)
 
 IMPORTER_NAMESPACE = uuid.UUID("dc40695e-61dc-4da5-b2f0-b6ccb7e6ed3d")
-IMPORTER_PRINCIPAL_ID = uuid.uuid5(IMPORTER_NAMESPACE, "principal:authority-importer")
-
-PRINCIPAL_COLLECTION = "Principal"
-SOURCE_COLLECTION = "Source"
-ENTITY_COLLECTION = "Entity"
-ENTITY_NAME_COLLECTION = "EntityName"
-DESCRIPTION_COLLECTION = "Description"
 
 
 class PrincipalType(StrEnum):
@@ -83,14 +69,14 @@ class ImportStats:
 
 
 @dataclass(slots=True)
-class WeaviateConnectionConfig:
-    http_host: str = "localhost"
-    http_port: int = 8080
-    http_secure: bool = False
-    grpc_host: str = "localhost"
-    grpc_port: int = 50051
-    grpc_secure: bool = False
+class ApiConnectionConfig:
+    base_url: str = "https://dev.people-gator.capturemyhand.com"
     api_key: str | None = None
+    embedding_service_url: str | None = None
+    timeout_seconds: float = 30.0
+
+
+WeaviateConnectionConfig = ApiConnectionConfig
 
 
 def _non_empty(value: str | None) -> str | None:
@@ -319,112 +305,7 @@ def _build_nlcr_records(nlcr_dir: str) -> list[AuthorityRecord]:
     return records
 
 
-def _source_uuid(provider: SourceKind, uri: str) -> uuid.UUID:
-    return uuid.uuid5(IMPORTER_NAMESPACE, f"source:{provider.value}:{uri}")
-
-
-def _entity_uuid(provider: SourceKind, external_id: str) -> uuid.UUID:
-    return uuid.uuid5(IMPORTER_NAMESPACE, f"entity:{provider.value}:{external_id}")
-
-
-def _entity_name_uuid(entity_id: uuid.UUID, name: str) -> uuid.UUID:
-    return uuid.uuid5(IMPORTER_NAMESPACE, f"entity_name:{entity_id}:{name.lower()}")
-
-
-def _description_uuid(entity_id: uuid.UUID, language: str, text: str) -> uuid.UUID:
-    return uuid.uuid5(IMPORTER_NAMESPACE, f"description:{entity_id}:{language.lower()}:{text.lower()}")
-
-
-async def _fetch_by_id(
-    client: WeaviateAsyncClient,
-    collection_name: str,
-    id_property: str,
-    object_id: uuid.UUID,
-) -> object | None:
-    response = await client.collections.get(collection_name).query.fetch_objects(
-        filters=Filter.by_property(id_property).equal(str(object_id)),
-        limit=1,
-    )
-    objects = getattr(response, "objects")
-    if not objects:
-        return None
-    return objects[0]
-
-
-async def _upsert(
-    client: WeaviateAsyncClient,
-    collection_name: str,
-    object_uuid: uuid.UUID,
-    *,
-    id_property: str,
-    properties: MutableProperties,
-    references: dict[str, uuid.UUID] | None = None,
-) -> None:
-    collection = client.collections.get(collection_name)
-    current = await _fetch_by_id(client, collection_name, id_property, object_uuid)
-    if current is None:
-        await collection.data.insert(
-            uuid=object_uuid,
-            properties=properties,
-            references=references,
-        )
-        return
-    await collection.data.replace(
-        uuid=object_uuid,
-        properties=properties,
-        references=references,
-    )
-
-
-def _build_weaviate_client(config: WeaviateConnectionConfig) -> WeaviateAsyncClient:
-    auth = Auth.api_key(config.api_key) if config.api_key else None
-    return weaviate.use_async_with_custom(
-        http_host=config.http_host,
-        http_port=config.http_port,
-        http_secure=config.http_secure,
-        grpc_host=config.grpc_host,
-        grpc_port=config.grpc_port,
-        grpc_secure=config.grpc_secure,
-        auth_credentials=auth,
-    )
-
-
-async def _ensure_importer_principal(client: WeaviateAsyncClient) -> uuid.UUID:
-    existing = await _fetch_by_id(
-        client,
-        PRINCIPAL_COLLECTION,
-        "principal_id",
-        IMPORTER_PRINCIPAL_ID,
-    )
-    if existing is not None:
-        return IMPORTER_PRINCIPAL_ID
-
-    await _upsert(
-        client,
-        PRINCIPAL_COLLECTION,
-        IMPORTER_PRINCIPAL_ID,
-        id_property="principal_id",
-        properties={
-            "principal_id": str(IMPORTER_PRINCIPAL_ID),
-            "principal_type": PrincipalType.service_agent.value,
-            "display_name": "Authority Importer",
-            "is_active": True,
-            "external_subject": None,
-            "external_issuer": None,
-            "email": None,
-            "annotation_type": None,
-            "role": "authority-importer",
-            "model_slug": None,
-            "model_version": None,
-            "registry_source": None,
-            "registry_uri": None,
-        },
-    )
-    return IMPORTER_PRINCIPAL_ID
-
-
-async def _upsert_source_for_record(client: WeaviateAsyncClient, record: AuthorityRecord) -> uuid.UUID:
-    source_id = _source_uuid(record.provider, record.uri)
+def _build_source_create_payload(record: AuthorityRecord) -> dict[str, object]:
     if record.provider is SourceKind.wikidata:
         metadata = WikidataSourceMetadata(
             entity_id=record.external_id,
@@ -435,104 +316,169 @@ async def _upsert_source_for_record(client: WeaviateAsyncClient, record: Authori
     else:
         raise ValueError(f"Unsupported provider for main record source: {record.provider.value}")
 
-    await _upsert(
-        client,
-        SOURCE_COLLECTION,
-        source_id,
-        id_property="source_id",
-        properties={
-            "source_id": str(source_id),
-            "source_type": record.provider.value,
-            "uri": record.uri,
-            "metadata": metadata.model_dump(mode="json"),
-        },
-    )
-    return source_id
+    return {
+        "source_type": record.provider.value,
+        "uri": record.uri,
+        "metadata": metadata.model_dump(mode="json"),
+    }
 
 
-async def _upsert_wikimedia_source(client: WeaviateAsyncClient, image_url: str) -> None:
-    source_id = _source_uuid(SourceKind.wikimedia, image_url)
-    metadata = WikimediaImageSourceMetadata(wikimedia_url=_validated_url(image_url))
-    await _upsert(
-        client,
-        SOURCE_COLLECTION,
-        source_id,
-        id_property="source_id",
-        properties={
-            "source_id": str(source_id),
-            "source_type": SourceKind.wikimedia.value,
-            "uri": image_url,
-            "metadata": metadata.model_dump(mode="json"),
-        },
-    )
-
-
-async def _upsert_entity(
-    client: WeaviateAsyncClient,
-    record: AuthorityRecord,
-    principal_id: uuid.UUID,
-) -> uuid.UUID:
-    entity_id = _entity_uuid(record.provider, record.external_id)
+def _build_entity_create_payload(record: AuthorityRecord) -> dict[str, object]:
     preferred_name = record.names[0] if record.names else (record.aliases[0] if record.aliases else None)
     preferred_description = record.descriptions[0][0] if record.descriptions else None
 
-    wikidata_id: str | None = None
-    nlcr_authority_id: str | None = None
-    if record.provider is SourceKind.wikidata:
-        wikidata_id = record.external_id
-    elif record.provider is SourceKind.nlcr:
-        nlcr_authority_id = record.external_id
+    payload: dict[str, object] = {
+        "entity_type": "person",
+        "name": preferred_name,
+        "description": preferred_description,
+    }
 
-    await _upsert(
-        client,
-        ENTITY_COLLECTION,
-        entity_id,
-        id_property="entity_id",
-        properties={
-            "entity_id": str(entity_id),
-            "principal_id": str(principal_id),
-            "entity_type": "person",
-            "name": preferred_name,
-            "description": preferred_description,
-            "wikidata_id": wikidata_id,
-            "nlcr_authority_id": nlcr_authority_id,
-        },
-        references={"principal": principal_id},
-    )
-    return entity_id
+    if record.provider is SourceKind.wikidata:
+        payload["wikidata_id"] = record.external_id
+    elif record.provider is SourceKind.nlcr:
+        payload["nlcr_authority_id"] = record.external_id
+    return payload
+
+
+def _build_entity_name_create_payload(
+    entity_id: uuid.UUID,
+    source_id: uuid.UUID,
+    name: str,
+    *,
+    embedding: list[float] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "name": name,
+        "source_id": str(source_id),
+        "entity_id": str(entity_id),
+    }
+    if embedding is not None:
+        payload["embedding"] = embedding
+    return payload
+
+
+def _build_description_create_payload(
+    entity_id: uuid.UUID,
+    source_id: uuid.UUID,
+    text: str,
+    language: str,
+    *,
+    embedding: list[float] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "text": text,
+        "language": language,
+        "source_id": str(source_id),
+        "entity_id": str(entity_id),
+    }
+    if embedding is not None:
+        payload["embedding"] = embedding
+    return payload
+
+
+async def _get_embedding(
+    session: httpx.AsyncClient,
+    service_url: str,
+    text: str,
+    semaphore: asyncio.Semaphore,
+) -> list[float]:
+    async with semaphore:
+        response = await session.post(service_url, json={"text": text}, timeout=30.0)
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict) and isinstance(payload.get("embedding"), list):
+            return [float(value) for value in payload["embedding"]]
+        if isinstance(payload, list):
+            return [float(value) for value in payload]
+        raise ValueError(f"Unsupported embedding payload from {service_url}: {payload}")
+
+
+async def _request_json(
+    session: httpx.AsyncClient,
+    method: str,
+    path: str,
+    *,
+    config: ApiConnectionConfig,
+    json_body: dict[str, object] | None = None,
+) -> dict[str, object]:
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+        headers["X-API-Key"] = config.api_key
+
+    try:
+        response = await session.request(method, path, headers=headers, json=json_body)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(f"{method} {path} failed with status {exc.response.status_code}: {exc.response.text}") from exc
+    except httpx.TimeoutException as exc:
+        raise RuntimeError(f"{method} {path} timed out") from exc
+
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Unexpected response from {path}: {payload}")
+    return payload
+
+
+async def _upsert_source_for_record(
+    session: httpx.AsyncClient,
+    config: ApiConnectionConfig,
+    record: AuthorityRecord,
+) -> uuid.UUID:
+    payload = _build_source_create_payload(record)
+    response = await _request_json(session, "POST", f"{config.base_url.rstrip('/')}/api/v1/sources", config=config, json_body=payload)
+    return uuid.UUID(str(response["source_id"]))
+
+
+async def _upsert_entity(
+    session: httpx.AsyncClient,
+    config: ApiConnectionConfig,
+    record: AuthorityRecord,
+) -> uuid.UUID:
+    payload = _build_entity_create_payload(record)
+    response = await _request_json(session, "POST", f"{config.base_url.rstrip('/')}/api/v1/entities", config=config, json_body=payload)
+    return uuid.UUID(str(response["entity_id"]))
 
 
 async def _upsert_entity_names(
-    client: WeaviateAsyncClient,
+    session: httpx.AsyncClient,
+    config: ApiConnectionConfig,
     entity_id: uuid.UUID,
     source_id: uuid.UUID,
     names: list[str],
+    *,
+    semaphore: asyncio.Semaphore,
+    embedding_cache: dict[str, list[float]],
 ) -> int:
     inserted = 0
     for name in _deduplicate_strings(names):
-        entity_name_id = _entity_name_uuid(entity_id, name)
-        await _upsert(
-            client,
-            ENTITY_NAME_COLLECTION,
-            entity_name_id,
-            id_property="entity_name_id",
-            properties={
-                "entity_name_id": str(entity_name_id),
-                "name": name,
-                "source_id": str(source_id),
-                "entity_id": str(entity_id),
-            },
-            references={"entity": entity_id, "source": source_id},
+        embedding: list[float] | None = None
+        if config.embedding_service_url:
+            if name not in embedding_cache:
+                embedding_cache[name] = await _get_embedding(session, config.embedding_service_url, name, semaphore)
+            embedding = embedding_cache[name]
+
+        payload = _build_entity_name_create_payload(entity_id, source_id, name, embedding=embedding)
+        await _request_json(
+            session,
+            "POST",
+            f"{config.base_url.rstrip('/')}/api/v1/entity-names",
+            config=config,
+            json_body=payload,
         )
         inserted += 1
     return inserted
 
 
 async def _upsert_descriptions(
-    client: WeaviateAsyncClient,
+    session: httpx.AsyncClient,
+    config: ApiConnectionConfig,
     entity_id: uuid.UUID,
     source_id: uuid.UUID,
     descriptions: list[tuple[str, str]],
+    *,
+    semaphore: asyncio.Semaphore,
+    embedding_cache: dict[str, list[float]],
 ) -> int:
     inserted = 0
     seen: set[tuple[str, str]] = set()
@@ -544,23 +490,47 @@ async def _upsert_descriptions(
             continue
         seen.add(key)
 
-        description_id = _description_uuid(entity_id, normalized_language, normalized_text)
-        await _upsert(
-            client,
-            DESCRIPTION_COLLECTION,
-            description_id,
-            id_property="description_id",
-            properties={
-                "description_id": str(description_id),
-                "text": normalized_text,
-                "language": normalized_language,
-                "source_id": str(source_id),
-                "entity_id": str(entity_id),
-            },
-            references={"entity": entity_id, "source": source_id},
+        embedding: list[float] | None = None
+        if config.embedding_service_url:
+            cache_key = f"{normalized_language}:{normalized_text}"
+            if cache_key not in embedding_cache:
+                embedding_cache[cache_key] = await _get_embedding(
+                    session,
+                    config.embedding_service_url,
+                    normalized_text,
+                    semaphore,
+                )
+            embedding = embedding_cache[cache_key]
+
+        payload = _build_description_create_payload(
+            entity_id,
+            source_id,
+            normalized_text,
+            normalized_language,
+            embedding=embedding,
+        )
+        await _request_json(
+            session,
+            "POST",
+            f"{config.base_url.rstrip('/')}/api/v1/descriptions",
+            config=config,
+            json_body=payload,
         )
         inserted += 1
     return inserted
+
+
+async def _upsert_wikimedia_source(
+    session: httpx.AsyncClient,
+    config: ApiConnectionConfig,
+    image_url: str,
+) -> None:
+    payload = {
+        "source_type": SourceKind.wikimedia.value,
+        "uri": image_url,
+        "metadata": WikimediaImageSourceMetadata(wikimedia_url=_validated_url(image_url)).model_dump(mode="json"),
+    }
+    await _request_json(session, "POST", f"{config.base_url.rstrip('/')}/api/v1/sources", config=config, json_body=payload)
 
 
 def _build_records(
@@ -579,13 +549,15 @@ def _build_records(
 
 
 async def _import_records(
-    client: WeaviateAsyncClient,
+    session: httpx.AsyncClient,
+    config: ApiConnectionConfig,
     records: list[AuthorityRecord],
     max_records: int | None,
 ) -> ImportStats:
     stats = ImportStats()
-    principal_id = await _ensure_importer_principal(client)
     import_records = records[:max_records] if max_records is not None else records
+    embedding_cache: dict[str, list[float]] = {}
+    semaphore = asyncio.Semaphore(min(8, max(1, len(import_records))))
 
     for index, record in enumerate(import_records, start=1):
         logger.info(
@@ -595,25 +567,36 @@ async def _import_records(
             record.provider.value,
             record.external_id,
         )
-        source_id = await _upsert_source_for_record(client, record)
+        source_id = await _upsert_source_for_record(session, config, record)
         stats.sources_upserted += 1
 
-        entity_id = await _upsert_entity(client, record, principal_id)
+        entity_id = await _upsert_entity(session, config, record)
         stats.entities_upserted += 1
 
         combined_names = record.names + record.aliases
-        stats.names_upserted += await _upsert_entity_names(client, entity_id, source_id, combined_names)
+        stats.names_upserted += await _upsert_entity_names(
+            session,
+            config,
+            entity_id,
+            source_id,
+            combined_names,
+            semaphore=semaphore,
+            embedding_cache=embedding_cache,
+        )
         stats.descriptions_upserted += await _upsert_descriptions(
-            client,
+            session,
+            config,
             entity_id,
             source_id,
             record.descriptions,
+            semaphore=semaphore,
+            embedding_cache=embedding_cache,
         )
 
         for image_url in _deduplicate_strings(record.wikimedia_urls):
             if not _is_valid_url(image_url):
                 continue
-            await _upsert_wikimedia_source(client, image_url)
+            await _upsert_wikimedia_source(session, config, image_url)
             stats.wikimedia_sources_upserted += 1
 
         stats.records_processed += 1
@@ -627,17 +610,14 @@ async def run_authority_import(
     wikidata_prefix: str,
     nlcr_dir: str | None,
     max_records: int | None,
-    weaviate: WeaviateConnectionConfig,
+    weaviate: ApiConnectionConfig,
 ) -> ImportStats:
     records = _build_records(wikidata_dir, wikidata_prefix, nlcr_dir)
     logger.info("Prepared %d authority records for import", len(records))
 
-    client = _build_weaviate_client(weaviate)
-    await client.connect()
-    try:
-        stats = await _import_records(client, records, max_records)
-    finally:
-        await client.close()
+    timeout = httpx.Timeout(weaviate.timeout_seconds)
+    async with httpx.AsyncClient(timeout=timeout) as session:
+        stats = await _import_records(session, weaviate, records, max_records)
 
     logger.info("Import finished")
     logger.info("records_processed=%d", stats.records_processed)

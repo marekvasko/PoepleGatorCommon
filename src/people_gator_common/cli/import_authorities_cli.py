@@ -4,14 +4,14 @@ import argparse
 import asyncio
 
 from people_gator_common.cli.helpers import configure_logging
-from people_gator_common.pipelines.authority_import import WeaviateConnectionConfig
+from people_gator_common.pipelines.authority_import import ApiConnectionConfig
 from people_gator_common.pipelines.authority_import import run_authority_import
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Import authority records from Wikidata/Wikimedia and NLCR outputs into Weaviate."
+            "Import authority records from Wikidata/Wikimedia and NLCR outputs into the People Gator API."
         )
     )
     parser.add_argument(
@@ -46,44 +46,28 @@ def parse_args() -> argparse.Namespace:
         help="Optional cap for number of imported records.",
     )
     parser.add_argument(
-        "--weaviate-http-host",
+        "--api-base-url",
         type=str,
-        default="localhost",
-        help="Weaviate HTTP host.",
+        default="https://dev.people-gator.capturemyhand.com",
+        help="Base URL of the People Gator API.",
     )
     parser.add_argument(
-        "--weaviate-http-port",
-        type=int,
-        default=8080,
-        help="Weaviate HTTP port.",
-    )
-    parser.add_argument(
-        "--weaviate-http-secure",
-        action="store_true",
-        help="Use HTTPS for Weaviate HTTP connection.",
-    )
-    parser.add_argument(
-        "--weaviate-grpc-host",
-        type=str,
-        default="localhost",
-        help="Weaviate gRPC host.",
-    )
-    parser.add_argument(
-        "--weaviate-grpc-port",
-        type=int,
-        default=50051,
-        help="Weaviate gRPC port.",
-    )
-    parser.add_argument(
-        "--weaviate-grpc-secure",
-        action="store_true",
-        help="Use TLS for Weaviate gRPC connection.",
-    )
-    parser.add_argument(
-        "--weaviate-api-key",
+        "--api-key",
         type=str,
         default=None,
-        help="Optional Weaviate API key.",
+        help="Optional API key or bearer token for the People Gator API.",
+    )
+    parser.add_argument(
+        "--embedding-service-url",
+        type=str,
+        default=None,
+        help="Optional embedding service endpoint that accepts a JSON body with a text field.",
+    )
+    parser.add_argument(
+        "--request-timeout-seconds",
+        type=float,
+        default=30.0,
+        help="HTTP timeout for API calls.",
     )
     parser.add_argument(
         "--log-level",
@@ -100,14 +84,11 @@ async def _run(args: argparse.Namespace) -> int:
         wikidata_prefix=args.wikidata_prefix,
         nlcr_dir=args.nlcr_dir,
         max_records=args.max_records,
-        weaviate=WeaviateConnectionConfig(
-            http_host=args.weaviate_http_host,
-            http_port=args.weaviate_http_port,
-            http_secure=args.weaviate_http_secure,
-            grpc_host=args.weaviate_grpc_host,
-            grpc_port=args.weaviate_grpc_port,
-            grpc_secure=args.weaviate_grpc_secure,
-            api_key=args.weaviate_api_key,
+        weaviate=ApiConnectionConfig(
+            base_url=args.api_base_url,
+            api_key=args.api_key,
+            embedding_service_url=args.embedding_service_url,
+            timeout_seconds=args.request_timeout_seconds,
         ),
     )
     return 0

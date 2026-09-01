@@ -39,6 +39,7 @@ def unique_values_from_csv(
     with open_file(source_csv, "r") as f:
         df = pd.read_csv(f)
     logger.debug("Read %d rows from source CSV %s", len(df), source_csv)
+    df[values_column] = df[values_column].astype(str)
     unique_values_df = (
         df[[values_column]]
         .drop_duplicates()
