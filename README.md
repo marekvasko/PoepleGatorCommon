@@ -25,17 +25,25 @@ Input directories can be:
 ## LLM NER CLI
 
 The `people-gator-llm-ner` command extracts named entities from PeopleGator
-page-layout JSON with an OpenRouter model. Input is expected at
-`<library>/<document-id>.layouts/<page-id>.json`; output is written as
-`<library>/<document-id>/<page-id>.json`. Existing outputs are skipped so an
-interrupted corpus run can be resumed.
+page-layout JSON using the storage backend configured by
+`PEOPLEGATOR__STORAGE__...`. The input prefix must contain
+`<library>/<document-id>/<page-id>.json`; output is written below the
+output prefix as `<library>/<document-id>/<page-id>.json`.
 
-Set `OPENROUTER_API_KEY` (or place it in `.env`), then run:
+The command lists both prefixes once, skips outputs that already exist, and
+processes only missing pages. Set `OPENROUTER_API_KEY` (or place it in `.env`),
+then run. The canonical prefixes are the defaults:
+
+```bash
+uv run people-gator-llm-ner
+```
+
+They can also be overridden explicitly:
 
 ```bash
 uv run people-gator-llm-ner \
-    --input-dir /path/to/people_gator__data \
-    --output-dir peoplegator__data__ners
+    --input-prefix page-layouts \
+    --output-prefix page-named-entities
 ```
 
 Use `--max-pages 1` for a one-page smoke test. See
