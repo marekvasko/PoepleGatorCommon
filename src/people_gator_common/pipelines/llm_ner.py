@@ -109,15 +109,20 @@ class TextNerOutput(BaseModel):
     chunk_metadata: list[ChunkMetadata]
 
 
-class LineIdentifier(BaseModel):
+class LineMapping(BaseModel):
     region_id: str
     line_id: str
+    
+class LineCharMapping(BaseModel):
+    region_id: str
+    line_id: str
+    char_index: int
 
 
 class PageChunkMetadata(ChunkMetadata):
     """Page-specific metadata for the chunk at the same list index."""
 
-    line_identifiers: list[LineIdentifier]
+    line_mapping: list[LineMapping]
 
 
 class PageNersOutput(TextNerOutput):
@@ -332,10 +337,10 @@ def iter_peoplegator_pages(dataset_dir: str | Path) -> Iterator[PageInput]:
 
 def page_to_lines_and_identifiers(
     page: Mapping[str, Any],
-) -> tuple[list[str], list[LineIdentifier]]:
+) -> tuple[list[str], list[LineMapping]]:
     """Adapt a PeopleGator page layout to aligned text lines and identifiers."""
     lines: list[str] = []
-    identifiers: list[LineIdentifier] = []
+    identifiers: list[LineMapping] = []
     regions = page.get("regions", [])
     if not isinstance(regions, list):
         return lines, identifiers
@@ -353,7 +358,7 @@ def page_to_lines_and_identifiers(
             transcription = line.get("transcription", "")
             lines.append("" if transcription is None else str(transcription))
             identifiers.append(
-                LineIdentifier(
+                LineMapping(
                     region_id=region_id,
                     line_id=str(line.get("id", "")),
                 )
@@ -387,7 +392,7 @@ def process_page(
         PageChunkMetadata(
             start_line=metadata.start_line,
             end_line=metadata.end_line,
-            line_identifiers=line_identifiers[
+            line_mapping=line_identifiers[
                 metadata.start_line : metadata.end_line
             ],
         )
@@ -527,7 +532,7 @@ __all__ = [
     "DEFAULT_OVERLAP_LINES",
     "ChunkMetadata",
     "EntityType",
-    "LineIdentifier",
+    "LineMapping",
     "LlmNerRunSummary",
     "NamedEntity",
     "NamedEntityMention",
