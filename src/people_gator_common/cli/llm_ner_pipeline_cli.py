@@ -8,8 +8,10 @@ import dotenv
 
 from people_gator_common.cli.helpers import configure_logging
 from people_gator_common.pipelines.llm_ner import (
+    DEFAULT_INPUT_PREFIX,
     DEFAULT_MIN_CHARACTERS_IN_CHUNK,
     DEFAULT_MODEL,
+    DEFAULT_OUTPUT_PREFIX,
     DEFAULT_OVERLAP_LINES,
     run_llm_ner_pipeline,
 )
@@ -19,19 +21,27 @@ dotenv.load_dotenv()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Extract named entities from PeopleGator page layouts with an LLM.",
+        description="Extract NER between configured-storage PeopleGator prefixes.",
     )
     parser.add_argument(
         "-i",
+        "--input-prefix",
         "--input-dir",
-        required=True,
-        help="PeopleGator dataset root containing <library>/<document>.layouts directories.",
+        dest="input_prefix",
+        default=DEFAULT_INPUT_PREFIX,
+        help=(
+            "Storage-relative prefix containing "
+            "<library>/<document>/<page>.json objects "
+            "(default: %(default)s)."
+        ),
     )
     parser.add_argument(
         "-o",
+        "--output-prefix",
         "--output-dir",
-        default="peoplegator__data__ners",
-        help="Output directory for per-page NER JSON (default: %(default)s).",
+        dest="output_prefix",
+        default=DEFAULT_OUTPUT_PREFIX,
+        help="Storage-relative output prefix for per-page NER JSON (default: %(default)s).",
     )
     parser.add_argument(
         "--model",
@@ -78,8 +88,8 @@ def main() -> int:
     args = parse_args()
     configure_logging(args.log_level)
     summary = run_llm_ner_pipeline(
-        dataset_dir=args.input_dir,
-        output_dir=args.output_dir,
+        input_prefix=args.input_prefix,
+        output_prefix=args.output_prefix,
         model=args.model,
         reasoning_effort=args.reasoning_effort,
         min_characters_in_chunk=args.min_characters_in_chunk,

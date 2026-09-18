@@ -13,18 +13,26 @@ from enum import StrEnum
 import json
 import logging
 import os
-from pathlib import Path
+import posixpath
 import re
 from typing import Any, Literal
 
 from openrouter import OpenRouter
 from pydantic import BaseModel, ValidationError
 
+from people_gator_common.filesystem import (
+    glob as storage_glob,
+    read_text as storage_read_text,
+    write_text as storage_write_text,
+)
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "z-ai/glm-5.3-flash"
 DEFAULT_MIN_CHARACTERS_IN_CHUNK = 2048
 DEFAULT_OVERLAP_LINES = 1
+DEFAULT_INPUT_PREFIX = "page-layouts"
+DEFAULT_OUTPUT_PREFIX = "page-named-entities"
 
 PROMPT = """\
 You are an AI assistant that extracts a single type of named entity from text.
@@ -139,7 +147,7 @@ class PageInput:
     library: str
     document_id: str
     page_id: str
-    path: Path
+    path: str
 
 
 @dataclass(frozen=True)
@@ -313,26 +321,38 @@ def process_text_lines(
 # ---------------------------------------------------------------------------
 
 
-def iter_peoplegator_pages(dataset_dir: str | Path) -> Iterator[PageInput]:
-    """Yield page files from a PeopleGator dataset in deterministic order."""
-    root = Path(dataset_dir)
-    if not root.is_dir():
-        raise ValueError(f"PeopleGator dataset directory does not exist: {root}")
+def iter_peoplegator_pages(input_prefix: str | os.PathLike[str]) -> Iterator[PageInput]:
+    """Yield layout objects below a configured-storage prefix.
 
-    for library_dir in sorted(root.iterdir()):
-        if not library_dir.is_dir():
+    The expected key structure is
+    ``<prefix>/<library>/<document-id>/<page-id>.json``. Returned
+    paths are storage-relative and can be opened with
+    :mod:`people_gator_common.filesystem`.
+    """
+    input_prefix = posixpath.normpath(os.fspath(input_prefix))
+    pattern = posixpath.join(input_prefix, "*", "*", "*.json")
+    page_paths = sorted(storage_glob(pattern))
+    if not page_paths:
+        raise ValueError(
+            f"No PeopleGator page layouts found below storage prefix: "
+            f"{input_prefix}"
+        )
+
+    for page_path in page_paths:
+        relative_path = posixpath.relpath(page_path, input_prefix)
+        parts = relative_path.split("/")
+        if len(parts) != 3:
+            logger.warning("Ignoring unexpected layout key: %s", page_path)
             continue
-        for layout_dir in sorted(library_dir.iterdir()):
-            if not layout_dir.is_dir() or not layout_dir.name.endswith(".layouts"):
-                continue
-            document_id = layout_dir.name.removesuffix(".layouts")
-            for page_path in sorted(layout_dir.glob("*.json")):
-                yield PageInput(
-                    library=library_dir.name,
-                    document_id=document_id,
-                    page_id=page_path.stem,
-                    path=page_path,
-                )
+        library, document_id, page_name = parts
+        if not page_name.endswith(".json"):
+            continue
+        yield PageInput(
+            library=library,
+            document_id=document_id,
+            page_id=page_name.removesuffix(".json"),
+            path=page_path,
+        )
 
 
 def page_to_lines_and_identifiers(
@@ -410,8 +430,8 @@ def process_page(
 
 def _run_with_client(
     *,
-    dataset_dir: Path,
-    output_dir: Path,
+    input_prefix: str,
+    output_prefix: str,
     client: Any,
     model: str,
     reasoning_effort: ReasoningEffort,
@@ -422,20 +442,32 @@ def _run_with_client(
 ) -> LlmNerRunSummary:
     processed_pages = 0
     skipped_pages = 0
+    page_inputs = list(iter_peoplegator_pages(input_prefix))
 
-    for page_input in iter_peoplegator_pages(dataset_dir):
-        output_path = (
-            output_dir
-            / page_input.library
-            / page_input.document_id
-            / f"{page_input.page_id}.json"
+    existing_outputs: set[str] = set()
+    if not force:
+        output_pattern = posixpath.join(output_prefix, "*", "*", "*.json")
+        existing_outputs = set(storage_glob(output_pattern))
+
+    logger.info(
+        "Found %d layout pages and %d existing NER outputs",
+        len(page_inputs),
+        len(existing_outputs),
+    )
+
+    for page_input in page_inputs:
+        if max_pages is not None and processed_pages >= max_pages:
+            break
+        output_path = posixpath.join(
+            output_prefix,
+            page_input.library,
+            page_input.document_id,
+            f"{page_input.page_id}.json",
         )
-        if output_path.exists() and not force:
+        if output_path in existing_outputs:
             skipped_pages += 1
             logger.debug("Skipping existing page output %s", output_path)
             continue
-        if max_pages is not None and processed_pages >= max_pages:
-            break
 
         logger.info(
             "Processing %s/%s/%s",
@@ -443,8 +475,7 @@ def _run_with_client(
             page_input.document_id,
             page_input.page_id,
         )
-        with page_input.path.open("r", encoding="utf-8") as page_file:
-            page = json.load(page_file)
+        page = json.loads(storage_read_text(page_input.path))
         if not isinstance(page, Mapping):
             raise ValueError(f"Page layout must be a JSON object: {page_input.path}")
 
@@ -459,13 +490,7 @@ def _run_with_client(
             min_characters_in_chunk=min_characters_in_chunk,
             overlap_lines=overlap_lines,
         )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = output_path.with_suffix(".json.tmp")
-        temporary_path.write_text(
-            page_output.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
-        temporary_path.replace(output_path)
+        storage_write_text(output_path, page_output.model_dump_json(indent=2))
         processed_pages += 1
 
     return LlmNerRunSummary(
@@ -476,8 +501,8 @@ def _run_with_client(
 
 def run_llm_ner_pipeline(
     *,
-    dataset_dir: str | Path,
-    output_dir: str | Path,
+    input_prefix: str | os.PathLike[str] = DEFAULT_INPUT_PREFIX,
+    output_prefix: str | os.PathLike[str] = DEFAULT_OUTPUT_PREFIX,
     model: str = DEFAULT_MODEL,
     reasoning_effort: ReasoningEffort = "low",
     min_characters_in_chunk: int = DEFAULT_MIN_CHARACTERS_IN_CHUNK,
@@ -487,18 +512,16 @@ def run_llm_ner_pipeline(
     api_key: str | None = None,
     client: Any | None = None,
 ) -> LlmNerRunSummary:
-    """Extract named entities from a local PeopleGator dataset.
+    """Extract named entities between configured-storage prefixes.
 
-    Existing page outputs are skipped unless ``force`` is true. Writes are
-    atomic per page. When ``client`` is omitted, an OpenRouter client is made
-    using ``api_key`` or ``OPENROUTER_API_KEY``.
+    All layout keys and existing output keys are listed once. Existing outputs
+    are skipped unless ``force`` is true, then each missing page is read and
+    written through :mod:`people_gator_common.filesystem`. When ``client`` is
+    omitted, an OpenRouter client is made using ``api_key`` or
+    ``OPENROUTER_API_KEY``.
     """
-    dataset_path = Path(dataset_dir)
-    output_path = Path(output_dir)
-    if not dataset_path.is_dir():
-        raise ValueError(
-            f"PeopleGator dataset directory does not exist: {dataset_path}"
-        )
+    input_prefix = posixpath.normpath(os.fspath(input_prefix))
+    output_prefix = posixpath.normpath(os.fspath(output_prefix))
     if min_characters_in_chunk <= 0:
         raise ValueError("min_characters_in_chunk must be positive")
     if overlap_lines < 0:
@@ -507,8 +530,8 @@ def run_llm_ner_pipeline(
         raise ValueError("max_pages must be positive when provided")
 
     run_kwargs = {
-        "dataset_dir": dataset_path,
-        "output_dir": output_path,
+        "input_prefix": input_prefix,
+        "output_prefix": output_prefix,
         "model": model,
         "reasoning_effort": reasoning_effort,
         "min_characters_in_chunk": min_characters_in_chunk,
@@ -527,7 +550,9 @@ def run_llm_ner_pipeline(
 
 
 __all__ = [
+    "DEFAULT_INPUT_PREFIX",
     "DEFAULT_MIN_CHARACTERS_IN_CHUNK",
+    "DEFAULT_OUTPUT_PREFIX",
     "DEFAULT_MODEL",
     "DEFAULT_OVERLAP_LINES",
     "ChunkMetadata",
