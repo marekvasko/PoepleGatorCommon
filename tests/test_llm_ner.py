@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+from people_gator_common.pipelines.llm_ner import (
+    chunk_lines,
+    parse_json_result,
+    PageNersOutput,
+    process_page,
+    process_text_lines,
+    TextNerOutput,
+    run_llm_ner_pipeline,
+)
+
+
+class FakeOpenRouter:
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = iter(responses)
+        self.chat = SimpleNamespace(send=self.send)
+
+    def send(self, **_: object) -> SimpleNamespace:
+        message = SimpleNamespace(content=next(self._responses), reasoning="")
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def _page(*transcriptions: str) -> dict[str, object]:
+    return {
+        "id": "page-1",
+        "regions": [
+            {
+                "id": "region-1",
+                "lines": [
+                    {"id": f"line-{index}", "transcription": transcription}
+                    for index, transcription in enumerate(transcriptions)
+                ],
+            }
+        ],
+    }
+
+
+def _entity(name: str) -> str:
+    return json.dumps(
+        [
+            {
+                "name": name,
+                "type": "beeing",
+                "mentions": [{"name": name, "context": name}],
+                "info": "Person in the source text.",
+            }
+        ]
+    )
+
+
+def test_chunk_lines_tracks_overlap_indices() -> None:
+    chunks, indices = chunk_lines(
+        ["aaa", "bbb", "ccc"],
+        min_characters_in_chunk=5,
+        overlap_lines=1,
+    )
+
+    assert chunks == ["aaa\nbbb", "bbb\nccc"]
+    assert indices == [(0, 2), (1, 3)]
+
+
+def test_parse_json_result_accepts_fenced_json_and_surrounding_text() -> None:
+    assert parse_json_result("result:\n```json\n[{\"name\": \"Ada\"}]\n```\ndone") == [
+        {"name": "Ada"}
+    ]
+
+
+def test_text_processing_has_no_page_or_source_metadata() -> None:
+    result = process_text_lines(
+        ["Ada"],
+        client=FakeOpenRouter([_entity("Ada")]),
+    )
+
+    assert isinstance(result, TextNerOutput)
+    dumped_chunk = result.chunks[0].model_dump()
+    dumped_entity = dumped_chunk["valid_entities"][0]
+    assert "line_identifiers" not in dumped_chunk
+    assert "source" not in dumped_entity
+    assert set(dumped_entity) == {"name", "type", "mentions", "info"}
+
+
+def test_page_keeps_metadata_top_level_and_chunk_responses_separate() -> None:
+    client = FakeOpenRouter([_entity("Ada"), _entity("Grace")])
+
+    result = process_page(
+        _page("aaa", "bbb", "ccc"),
+        library="library",
+        document_id="document",
+        page_id="page-1",
+        client=client,
+        min_characters_in_chunk=5,
+        overlap_lines=1,
+    )
+
+    assert isinstance(result, PageNersOutput)
+    assert isinstance(result, TextNerOutput)
+    assert [chunk.raw_output for chunk in result.chunks] == [
+        _entity("Ada"),
+        _entity("Grace"),
+    ]
+    assert [line.line_id for line in result.chunk_metadata[0].line_identifiers] == [
+        "line-0",
+        "line-1",
+    ]
+    assert [line.line_id for line in result.chunk_metadata[1].line_identifiers] == [
+        "line-1",
+        "line-2",
+    ]
+    assert "line_identifiers" not in result.chunks[0].model_dump()
+    assert set(result.chunk_metadata[0].line_identifiers[0].model_dump()) == {
+        "region_id",
+        "line_id",
+    }
+
+
+def test_pipeline_mirrors_dataset_layout_and_skips_existing_output(
+    tmp_path: Path,
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    page_path = dataset_dir / "library" / "document.layouts" / "page.json"
+    page_path.parent.mkdir(parents=True)
+    page_path.write_text(json.dumps(_page("Ada")), encoding="utf-8")
+    output_dir = tmp_path / "output"
+
+    first_summary = run_llm_ner_pipeline(
+        dataset_dir=dataset_dir,
+        output_dir=output_dir,
+        client=FakeOpenRouter([_entity("Ada")]),
+    )
+    output_path = output_dir / "library" / "document" / "page.json"
+
+    assert first_summary.processed_pages == 1
+    output = json.loads(output_path.read_text(encoding="utf-8"))
+    assert output["chunks"][0]["valid_entities"][0]["name"] == "Ada"
+    assert "source" not in output["chunks"][0]["valid_entities"][0]
+    assert output["chunk_metadata"][0]["line_identifiers"][0]["line_id"] == "line-0"
+
+    second_summary = run_llm_ner_pipeline(
+        dataset_dir=dataset_dir,
+        output_dir=output_dir,
+        client=FakeOpenRouter([]),
+    )
+    assert second_summary.processed_pages == 0
+    assert second_summary.skipped_pages == 1

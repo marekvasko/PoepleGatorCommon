@@ -39,6 +39,7 @@ dependencies = [
     "opentelemetry-sdk>=1.42.1",
     "fuzzysearch>=0.8.1",
     "weaviate-client>=4.21.2",
+    "openrouter>=1.1.157",
 ]
 
 [project.scripts]
@@ -53,6 +54,7 @@ people-gator-embed-names  = "people_gator_common.cli.embed_names_pipeline_cli:ma
 people-gator-embed-faces = "people_gator_common.cli.embed_faces_pipeline_cli:main"
 people-gator-ner-postprocess = "people_gator_common.cli.ner_postprocess_pipeline_cli:main"
 people-gator-ner-map-to-chunks = "people_gator_common.cli.ner_map_to_chunks_pipeline_cli:main"
+people-gator-llm-ner = "people_gator_common.cli.llm_ner_pipeline_cli:main"
 people-gator-import-authorities = "people_gator_common.cli.import_authorities_cli:main"
 
 [build-system]
