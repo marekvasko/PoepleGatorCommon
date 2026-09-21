@@ -68,3 +68,25 @@ uv run people-gator-llm-ner \
 Use `--max-pages 1` for a one-page smoke test. See
 `uv run people-gator-llm-ner --help` for model, chunking, reasoning, and
 overwrite options.
+
+## NER entity-linking decisions
+
+The `people-gator-ner-entity-linking` command reads the per-page output of
+`people-gator-ner-clusters`. For every resolved source cluster it searches the
+People Gator API using only repeated `q` parameters, fetches full details for
+each returned entity, and asks the configured OpenRouter model whether to
+propose a merge or a new entity. Short and long descriptions in every saved
+decision are rendered in Czech (`cs`), including when database descriptions are
+in another language.
+
+This command is proposal-only: it does not `POST` or `PATCH` entities. Its
+per-page JSON output retains the complete source cluster, hydrated candidates,
+LLM request/response, normalized decision, and selected entity ID for a merge.
+
+```bash
+PEOPLE_GATOR_API_BEARER_TOKEN=... OPENROUTER_API_KEY=... \
+  uv run people-gator-ner-entity-linking
+```
+
+Instead of an existing bearer token, set `PEOPLE_GATOR_API_USERNAME` and
+`PEOPLE_GATOR_API_PASSWORD` to use the OAuth2 password flow with browse scope.

@@ -57,6 +57,7 @@ people-gator-ner-postprocess = "people_gator_common.cli.ner_postprocess_pipeline
 people-gator-ner-map-to-chunks = "people_gator_common.cli.ner_map_to_chunks_pipeline_cli:main"
 people-gator-llm-ner = "people_gator_common.cli.llm_ner_pipeline_cli:main"
 people-gator-ner-clusters = "people_gator_common.cli.ner_clusters_pipeline_cli:main"
+people-gator-ner-entity-linking = "people_gator_common.cli.ner_entity_linking_pipeline_cli:main"
 people-gator-import-authorities = "people_gator_common.cli.import_authorities_cli:main"
 people-gator-import-faces = "people_gator_common.cli.import_faces_cli:main"
 people-gator-backfill-face-embeddings = "people_gator_common.cli.backfill_face_embeddings_cli:main"
