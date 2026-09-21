@@ -238,6 +238,7 @@ def run_wikidata_v2_pipeline(
         rate_limiter=rate_limiter,
         client=client,
     )
+    # Collect all characters (P31=Q95074)
     run_generic_collector(
         output_file=os.path.join(output_dir, f"{characters_prefix}.csv"),
         tmp_dir=tmp_dir,
