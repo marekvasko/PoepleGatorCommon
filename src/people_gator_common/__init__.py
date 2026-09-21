@@ -9,8 +9,10 @@ from people_gator_common.models import (
 	PeopleGatorNamedEntity,
 	PeopleGatorNamedEntitySpan,
 )
+from people_gator_common.progress import LoggingProgress, log_progress
 
 __all__ = [
+	"LoggingProgress",
 	"PeroLayout",
 	"PeroLine",
 	"PeroRegion",
@@ -18,4 +20,5 @@ __all__ = [
 	"PeopleGatorDetection",
 	"PeopleGatorNamedEntity",
 	"PeopleGatorNamedEntitySpan",
+	"log_progress",
 ]

@@ -42,6 +42,7 @@ from people_gator_common.pipelines.llm_ner import (
     PageNer,
     ReasoningEffort,
 )
+from people_gator_common.progress import log_progress
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ DEFAULT_MODEL = "z-ai/glm-5.3-flash"
 DEFAULT_CLUSTER_THRESHOLD = 92.0
 DEFAULT_INPUT_PREFIX = "page-named-entities"
 DEFAULT_OUTPUT_PREFIX = "page-named-entities-clusters"
+DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 
 DEFAULT_NAME_WEIGHT = 0.7
 DEFAULT_MENTION_WEIGHT = 0.3
@@ -561,6 +563,7 @@ def _run_with_client(
     name_weight: float,
     force: bool,
     max_pages: int | None,
+    progress_interval_seconds: float,
 ) -> NerClustersRunSummary:
     processed_pages = 0
     skipped_pages = 0
@@ -578,7 +581,13 @@ def _run_with_client(
         len(existing_outputs),
     )
 
-    for page_input in page_inputs:
+    for page_input in log_progress(
+        page_inputs,
+        logger=logger,
+        description="NER clustering",
+        unit="pages",
+        min_interval_seconds=progress_interval_seconds,
+    ):
         if max_pages is not None and processed_pages >= max_pages:
             break
         output_path = posixpath.join(
@@ -638,6 +647,7 @@ def run_ner_clusters_pipeline(
     name_weight: float = DEFAULT_NAME_WEIGHT,
     force: bool = False,
     max_pages: int | None = None,
+    progress_interval_seconds: float = DEFAULT_PROGRESS_INTERVAL_SECONDS,
     api_key: str | None = None,
     client: Any | None = None,  # openrouter client: no type stubs
 ) -> NerClustersRunSummary:
@@ -656,6 +666,8 @@ def run_ner_clusters_pipeline(
         raise ValueError("threshold must be between 0 and 100")
     if max_pages is not None and max_pages <= 0:
         raise ValueError("max_pages must be positive when provided")
+    if progress_interval_seconds < 0:
+        raise ValueError("progress_interval_seconds must be non-negative")
 
     run_kwargs = {
         "input_prefix": input_prefix,
@@ -667,6 +679,7 @@ def run_ner_clusters_pipeline(
         "name_weight": name_weight,
         "force": force,
         "max_pages": max_pages,
+        "progress_interval_seconds": progress_interval_seconds,
     }
     if client is not None:
         return _run_with_client(client=client, **run_kwargs)
@@ -685,6 +698,7 @@ __all__ = [
     "DEFAULT_MODEL",
     "DEFAULT_NAME_WEIGHT",
     "DEFAULT_OUTPUT_PREFIX",
+    "DEFAULT_PROGRESS_INTERVAL_SECONDS",
     "DisambiguatedNamedEntity",
     "DisambiguationOutput",
     "DisambiguationResult",

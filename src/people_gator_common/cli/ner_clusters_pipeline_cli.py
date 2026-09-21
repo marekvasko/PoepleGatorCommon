@@ -14,6 +14,7 @@ from people_gator_common.pipelines.ner_clusters import (
     DEFAULT_MODEL,
     DEFAULT_NAME_WEIGHT,
     DEFAULT_OUTPUT_PREFIX,
+    DEFAULT_PROGRESS_INTERVAL_SECONDS,
     run_ner_clusters_pipeline,
 )
 
@@ -90,6 +91,12 @@ def parse_args() -> argparse.Namespace:
         help="Process at most this many new pages (useful for smoke tests).",
     )
     parser.add_argument(
+        "--progress-interval",
+        type=float,
+        default=DEFAULT_PROGRESS_INTERVAL_SECONDS,
+        help="Seconds between progress/ETA logs (default: %(default)s).",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Reprocess pages whose output files already exist.",
@@ -115,6 +122,7 @@ def main() -> int:
         name_weight=args.name_weight,
         force=args.force,
         max_pages=args.max_pages,
+        progress_interval_seconds=args.progress_interval,
     )
     print(
         f"NER clustering complete: {summary.processed_pages} processed, "
