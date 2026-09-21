@@ -8,6 +8,7 @@ the bottom of the module adds those concerns around the text result.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 import json
@@ -34,6 +35,7 @@ DEFAULT_MIN_CHARACTERS_IN_CHUNK = 2048
 DEFAULT_OVERLAP_LINES = 1
 DEFAULT_INPUT_PREFIX = "page-layouts"
 DEFAULT_OUTPUT_PREFIX = "page-named-entities"
+DEFAULT_POSTPROCESSED_OUTPUT_PREFIX = "page-named-entities-exact-v4"
 DEFAULT_MENTION_MATCH_SCORE_CUTOFF = 80.0
 
 PROMPT = """\
@@ -68,6 +70,7 @@ Here is the text:
 """
 
 ReasoningEffort = Literal["low", "medium", "high"]
+Span = tuple[int, int]
 
 
 class EntityType(StrEnum):
@@ -79,11 +82,23 @@ class EntityType(StrEnum):
     BEEING = "beeing"
 
 
+class ExactMatchMethod(StrEnum):
+    CONTEXT_EXACT_NAME_EXACT = "context_exact_name_exact"
+    CONTEXT_EXACT_NAME_FUZZY = "context_exact_name_fuzzy"
+    CONTEXT_FUZZY_NAME_EXACT = "context_fuzzy_name_exact"
+    CONTEXT_FUZZY_NAME_FUZZY = "context_fuzzy_name_fuzzy"
+    NAME_EXACT_FALLBACK = "name_exact_fallback"
+    NAME_NORMALIZED_FALLBACK = "name_normalized_fallback"
+    NAME_FUZZY_FALLBACK = "name_fuzzy_fallback"
+    UNMATCHED = "unmatched"
+
+
 class NamedEntityMention(BaseModel):
     context: str
     name: str
     exact_context: str | None = None
     exact_name: str | None = None
+    exact_method: ExactMatchMethod | None = None
 
 
 class NamedEntity(BaseModel):
@@ -158,6 +173,15 @@ class PageInput:
 class LlmNerRunSummary:
     processed_pages: int
     skipped_pages: int
+
+
+@dataclass(frozen=True)
+class LlmNerPostprocessSummary:
+    processed_pages: int
+    skipped_pages: int
+    mentions: int
+    matched_contexts: int
+    matched_names: int
 
 
 # ---------------------------------------------------------------------------
@@ -240,21 +264,33 @@ def parse_json_result(response: str) -> list[Any]:
     return []
 
 
-def _find_closest_substring(
+def _find_exact_span(text: str, value: str) -> Span | None:
+    """Return the first exact occurrence of ``value`` in ``text``."""
+    if not value:
+        return None
+    start = text.find(value)
+    if start < 0:
+        return None
+    return start, start + len(value)
+
+
+def _find_fuzzy_span(
     text: str,
     value: str,
     *,
     score_cutoff: float,
-) -> str | None:
-    """Return the closest qualifying span as a literal slice of ``text``."""
-    exact_start = text.find(value)
-    if exact_start >= 0:
-        return value
-
-    max_l_dist = int(len(value) * (100 - score_cutoff) / 100)
-    if max_l_dist == 0:
+) -> Span | None:
+    """Return the closest non-exact occurrence of ``value`` in ``text``."""
+    if not value:
         return None
-    matches = find_near_matches(value, text, max_l_dist=max_l_dist)
+    max_l_dist = int(len(value) * (100 - score_cutoff) / 100)
+    if max_l_dist <= 0:
+        return None
+    matches = [
+        match
+        for match in find_near_matches(value, text, max_l_dist=max_l_dist)
+        if match.dist > 0
+    ]
     if not matches:
         return None
     match = min(
@@ -265,7 +301,126 @@ def _find_closest_substring(
             item.start,
         ),
     )
-    return text[match.start : match.end]
+    return match.start, match.end
+
+
+def _normalize_with_offsets(value: str) -> tuple[str, list[tuple[int, int]]]:
+    """Normalize case, whitespace, and line hyphenation while retaining offsets."""
+    normalized: list[str] = []
+    offsets: list[tuple[int, int]] = []
+    index = 0
+    while index < len(value):
+        if value[index] == "-":
+            after_hyphen = index + 1
+            while after_hyphen < len(value) and value[after_hyphen] in " \t\r":
+                after_hyphen += 1
+            if after_hyphen < len(value) and value[after_hyphen] == "\n":
+                index = after_hyphen + 1
+                while index < len(value) and value[index] in " \t":
+                    index += 1
+                continue
+
+        if value[index].isspace():
+            whitespace_start = index
+            while index < len(value) and value[index].isspace():
+                index += 1
+            if normalized and normalized[-1] != " ":
+                normalized.append(" ")
+                offsets.append((whitespace_start, index))
+            continue
+
+        folded = value[index].casefold()
+        normalized.extend(folded)
+        offsets.extend([(index, index + 1)] * len(folded))
+        index += 1
+
+    if normalized and normalized[-1] == " ":
+        normalized.pop()
+        offsets.pop()
+    return "".join(normalized), offsets
+
+
+def _line_context_span(text: str, start: int, end: int) -> Span:
+    """Return the smallest complete source line range containing a span."""
+    context_start = text.rfind("\n", 0, start) + 1
+    context_end = text.find("\n", end)
+    if context_end < 0:
+        context_end = len(text)
+    return context_start, context_end
+
+
+def _find_name_in_context(
+    text: str,
+    context_span: Span | None,
+    name: str,
+    *,
+    fuzzy: bool,
+    score_cutoff: float,
+) -> Span | None:
+    """Find a name inside an already matched context span."""
+    if context_span is None:
+        return None
+    context_start, context_end = context_span
+    context_text = text[context_start:context_end]
+    relative_span = (
+        _find_fuzzy_span(context_text, name, score_cutoff=score_cutoff)
+        if fuzzy
+        else _find_exact_span(context_text, name)
+    )
+    if relative_span is None:
+        return None
+    return context_start + relative_span[0], context_start + relative_span[1]
+
+
+def _find_hierarchical_spans(
+    text: str,
+    context: str,
+    name: str,
+    *,
+    fuzzy_context: bool,
+    fuzzy_name: bool,
+    score_cutoff: float,
+) -> tuple[Span | None, Span | None]:
+    """Find one context/name pair using exactly one matching strategy."""
+    context_span = (
+        _find_fuzzy_span(text, context, score_cutoff=score_cutoff)
+        if fuzzy_context
+        else _find_exact_span(text, context)
+    )
+    name_span = _find_name_in_context(
+        text,
+        context_span,
+        name,
+        fuzzy=fuzzy_name,
+        score_cutoff=score_cutoff,
+    )
+    return context_span, name_span
+
+
+def _find_normalized_span(
+    text: str,
+    value: str,
+    *,
+    score_cutoff: float,
+) -> Span | None:
+    """Find an exact or fuzzy normalized value and map it to source offsets."""
+    normalized_text, text_offsets = _normalize_with_offsets(text)
+    normalized_value, _ = _normalize_with_offsets(value)
+    if not normalized_value:
+        return None
+
+    normalized_span = _find_exact_span(normalized_text, normalized_value)
+    if normalized_span is None:
+        normalized_span = _find_fuzzy_span(
+            normalized_text,
+            normalized_value,
+            score_cutoff=score_cutoff,
+        )
+    if normalized_span is None:
+        return None
+
+    start, end = normalized_span
+    return text_offsets[start][0], text_offsets[end - 1][1]
 
 
 def find_exact_context_and_name(
@@ -274,36 +429,185 @@ def find_exact_context_and_name(
     name: str,
     *,
     score_cutoff: float = DEFAULT_MENTION_MATCH_SCORE_CUTOFF,
-) -> tuple[str | None, str | None]:
-    """Map an LLM mention back to literal substrings of its source text.
-
-    The context is aligned first so that it can disambiguate repeated names.
-    The mention name is then aligned only within that matched context. Each
-    non-``None`` result is sliced from its containing source, which guarantees
-    ``exact_context in text`` and ``exact_name in exact_context``.
-    """
+) -> tuple[str | None, str | None, ExactMatchMethod]:
+    """Map an LLM mention through a simple, ordered strategy waterfall."""
     if not 0 <= score_cutoff <= 100:
         raise ValueError("score_cutoff must be between 0 and 100")
-    if not text or not context:
-        return None, None
+    if not text:
+        return None, None, ExactMatchMethod.UNMATCHED
 
-    exact_context = _find_closest_substring(
-        text,
-        context,
-        score_cutoff=score_cutoff,
+    context_span: Span | None = None
+    name_span: Span | None = None
+    exact_method = ExactMatchMethod.UNMATCHED
+
+    if name_span is None and context and name:
+        context_span, name_span = _find_hierarchical_spans(
+            text,
+            context,
+            name,
+            fuzzy_context=False,
+            fuzzy_name=False,
+            score_cutoff=score_cutoff,
+        )
+        if name_span is not None:
+            exact_method = ExactMatchMethod.CONTEXT_EXACT_NAME_EXACT
+
+    if name_span is None and context and name:
+        context_span, name_span = _find_hierarchical_spans(
+            text,
+            context,
+            name,
+            fuzzy_context=False,
+            fuzzy_name=True,
+            score_cutoff=score_cutoff,
+        )
+        if name_span is not None:
+            exact_method = ExactMatchMethod.CONTEXT_EXACT_NAME_FUZZY
+
+    if name_span is None and context and name:
+        context_span, name_span = _find_hierarchical_spans(
+            text,
+            context,
+            name,
+            fuzzy_context=True,
+            fuzzy_name=False,
+            score_cutoff=score_cutoff,
+        )
+        if name_span is not None:
+            exact_method = ExactMatchMethod.CONTEXT_FUZZY_NAME_EXACT
+
+    if name_span is None and context and name:
+        context_span, name_span = _find_hierarchical_spans(
+            text,
+            context,
+            name,
+            fuzzy_context=True,
+            fuzzy_name=True,
+            score_cutoff=score_cutoff,
+        )
+        if name_span is not None:
+            exact_method = ExactMatchMethod.CONTEXT_FUZZY_NAME_FUZZY
+
+    if name_span is None and name:
+        name_span = _find_exact_span(text, name)
+        if name_span is not None:
+            exact_method = ExactMatchMethod.NAME_EXACT_FALLBACK
+
+    if name_span is None and name:
+        name_span = _find_fuzzy_span(text, name, score_cutoff=score_cutoff)
+        if name_span is not None:
+            exact_method = ExactMatchMethod.NAME_FUZZY_FALLBACK
+
+    if name_span is None and name:
+        name_span = _find_normalized_span(
+            text,
+            name,
+            score_cutoff=score_cutoff,
+        )
+        if name_span is not None:
+            exact_method = ExactMatchMethod.NAME_NORMALIZED_FALLBACK
+
+    if name_span is not None and exact_method in {
+        ExactMatchMethod.NAME_EXACT_FALLBACK,
+        ExactMatchMethod.NAME_FUZZY_FALLBACK,
+        ExactMatchMethod.NAME_NORMALIZED_FALLBACK,
+    }:
+        context_span = _line_context_span(text, *name_span)
+
+    exact_context = (
+        text[context_span[0] : context_span[1]] if context_span is not None else None
     )
-    if exact_context is None:
-        return None, None
+    exact_name = text[name_span[0] : name_span[1]] if name_span is not None else None
+    return exact_context, exact_name, exact_method
 
-    if not name:
-        return exact_context, None
 
-    exact_name = _find_closest_substring(
-        exact_context,
-        name,
-        score_cutoff=score_cutoff,
-    )
-    return exact_context, exact_name
+def _enrich_exact_matches(
+    output: dict[str, Any],
+    *,
+    score_cutoff: float,
+) -> tuple[int, int, int]:
+    mentions = 0
+    matched_contexts = 0
+    matched_names = 0
+    chunks = output.get("chunks", [])
+    if not isinstance(chunks, list):
+        return mentions, matched_contexts, matched_names
+
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        chunk_text = chunk.get("chunk_text", "")
+        if not isinstance(chunk_text, str):
+            continue
+        entities = chunk.get("valid_entities", [])
+        if not isinstance(entities, list):
+            continue
+        invalid_entities = chunk.get("invalid_entities", [])
+        if not isinstance(invalid_entities, list):
+            invalid_entities = []
+        matched_entities: list[Any] = []
+        for entity in entities:
+            if not isinstance(entity, dict):
+                invalid_entities.append(entity)
+                continue
+            entity_mentions = entity.get("mentions", [])
+            if not isinstance(entity_mentions, list):
+                invalid_entities.append(entity)
+                continue
+            matched_mentions: list[Any] = []
+            unmatched_mentions: list[Any] = []
+            for mention in entity_mentions:
+                if not isinstance(mention, dict):
+                    unmatched_mentions.append(mention)
+                    continue
+                context = mention.get("context", "")
+                name = mention.get("name", "")
+                if not isinstance(context, str) or not isinstance(name, str):
+                    unmatched_mentions.append(mention)
+                    continue
+                exact_context, exact_name, exact_method = find_exact_context_and_name(
+                    chunk_text,
+                    context,
+                    name,
+                    score_cutoff=score_cutoff,
+                )
+                mention["exact_context"] = exact_context
+                mention["exact_name"] = exact_name
+                mention["exact_method"] = exact_method.value
+                mentions += 1
+                matched_contexts += exact_context is not None
+                matched_names += exact_name is not None
+                if exact_context is not None and exact_name is not None:
+                    matched_mentions.append(mention)
+                else:
+                    unmatched_mentions.append(mention)
+
+            if matched_mentions:
+                matched_entity = deepcopy(entity)
+                matched_entity["mentions"] = matched_mentions
+                matched_entities.append(matched_entity)
+            if unmatched_mentions:
+                unmatched_entity = deepcopy(entity)
+                unmatched_entity["mentions"] = unmatched_mentions
+                invalid_entities.append(unmatched_entity)
+
+        chunk["valid_entities"] = matched_entities
+        chunk["invalid_entities"] = invalid_entities
+
+    return mentions, matched_contexts, matched_names
+
+
+def postprocess_exact_matches(
+    output: Mapping[str, Any],
+    *,
+    score_cutoff: float = DEFAULT_MENTION_MATCH_SCORE_CUTOFF,
+) -> dict[str, Any]:
+    """Return a copy of a saved LLM NER output enriched with exact matches."""
+    if not 0 <= score_cutoff <= 100:
+        raise ValueError("score_cutoff must be between 0 and 100")
+    enriched = deepcopy(dict(output))
+    _enrich_exact_matches(enriched, score_cutoff=score_cutoff)
+    return enriched
 
 
 def process_chunk(
@@ -343,13 +647,28 @@ def process_chunk(
         except ValidationError:
             invalid_entities.append(entity_data)
             continue
+        matched_mentions: list[NamedEntityMention] = []
+        unmatched_mentions: list[NamedEntityMention] = []
         for mention in entity.mentions:
-            mention.exact_context, mention.exact_name = find_exact_context_and_name(
+            (
+                mention.exact_context,
+                mention.exact_name,
+                mention.exact_method,
+            ) = find_exact_context_and_name(
                 text,
                 mention.context,
                 mention.name,
             )
-        valid_entities.append(entity)
+            if mention.exact_context is not None and mention.exact_name is not None:
+                matched_mentions.append(mention)
+            else:
+                unmatched_mentions.append(mention)
+
+        if matched_mentions:
+            valid_entities.append(entity.model_copy(update={"mentions": matched_mentions}))
+        if unmatched_mentions:
+            invalid_entity = entity.model_copy(update={"mentions": unmatched_mentions})
+            invalid_entities.append(invalid_entity.model_dump(mode="json"))
 
     return TextChunkNerOutput(
         chunk_text=text,
@@ -577,6 +896,79 @@ def _run_with_client(
     )
 
 
+def run_llm_ner_postprocessing(
+    *,
+    input_prefix: str | os.PathLike[str] = DEFAULT_OUTPUT_PREFIX,
+    output_prefix: str | os.PathLike[str] = DEFAULT_POSTPROCESSED_OUTPUT_PREFIX,
+    score_cutoff: float = DEFAULT_MENTION_MATCH_SCORE_CUTOFF,
+    force: bool = False,
+    max_pages: int | None = None,
+) -> LlmNerPostprocessSummary:
+    """Enrich saved LLM NER JSON without making any LLM calls.
+
+    The input's JSON structure and unknown fields are preserved.
+    Exact values and ``exact_method`` are added or refreshed, and mentions
+    which still cannot be matched are moved from ``valid_entities`` to
+    ``invalid_entities``. By default, results are written to a separate storage
+    prefix so the original model outputs remain unchanged.
+    """
+    input_prefix = posixpath.normpath(os.fspath(input_prefix))
+    output_prefix = posixpath.normpath(os.fspath(output_prefix))
+    if not 0 <= score_cutoff <= 100:
+        raise ValueError("score_cutoff must be between 0 and 100")
+    if max_pages is not None and max_pages <= 0:
+        raise ValueError("max_pages must be positive when provided")
+
+    input_pattern = posixpath.join(input_prefix, "*", "*", "*.json")
+    input_paths = sorted(storage_glob(input_pattern))
+    if not input_paths:
+        raise ValueError(f"No LLM NER outputs found below storage prefix: {input_prefix}")
+
+    existing_outputs: set[str] = set()
+    if not force:
+        output_pattern = posixpath.join(output_prefix, "*", "*", "*.json")
+        existing_outputs = set(storage_glob(output_pattern))
+
+    processed_pages = 0
+    skipped_pages = 0
+    mentions = 0
+    matched_contexts = 0
+    matched_names = 0
+    for input_path in input_paths:
+        if max_pages is not None and processed_pages >= max_pages:
+            break
+        relative_path = posixpath.relpath(input_path, input_prefix)
+        output_path = posixpath.join(output_prefix, relative_path)
+        if output_path in existing_outputs:
+            skipped_pages += 1
+            continue
+
+        parsed = json.loads(storage_read_text(input_path))
+        if not isinstance(parsed, dict):
+            raise ValueError(f"LLM NER output must be a JSON object: {input_path}")
+        enriched = deepcopy(parsed)
+        page_mentions, page_contexts, page_names = _enrich_exact_matches(
+            enriched,
+            score_cutoff=score_cutoff,
+        )
+        storage_write_text(
+            output_path,
+            json.dumps(enriched, ensure_ascii=False, indent=2),
+        )
+        processed_pages += 1
+        mentions += page_mentions
+        matched_contexts += page_contexts
+        matched_names += page_names
+
+    return LlmNerPostprocessSummary(
+        processed_pages=processed_pages,
+        skipped_pages=skipped_pages,
+        mentions=mentions,
+        matched_contexts=matched_contexts,
+        matched_names=matched_names,
+    )
+
+
 def run_llm_ner_pipeline(
     *,
     input_prefix: str | os.PathLike[str] = DEFAULT_INPUT_PREFIX,
@@ -632,11 +1024,14 @@ __all__ = [
     "DEFAULT_MENTION_MATCH_SCORE_CUTOFF",
     "DEFAULT_MIN_CHARACTERS_IN_CHUNK",
     "DEFAULT_OUTPUT_PREFIX",
+    "DEFAULT_POSTPROCESSED_OUTPUT_PREFIX",
     "DEFAULT_MODEL",
     "DEFAULT_OVERLAP_LINES",
     "ChunkMetadata",
     "EntityType",
+    "ExactMatchMethod",
     "LineMapping",
+    "LlmNerPostprocessSummary",
     "LlmNerRunSummary",
     "NamedEntity",
     "NamedEntityMention",
@@ -650,8 +1045,10 @@ __all__ = [
     "iter_peoplegator_pages",
     "page_to_lines_and_identifiers",
     "parse_json_result",
+    "postprocess_exact_matches",
     "process_chunk",
     "process_page",
     "process_text_lines",
     "run_llm_ner_pipeline",
+    "run_llm_ner_postprocessing",
 ]
