@@ -39,23 +39,44 @@ DEFAULT_POSTPROCESSED_OUTPUT_PREFIX = "page-named-entities-exact-v4"
 DEFAULT_MENTION_MATCH_SCORE_CUTOFF = 80.0
 
 PROMPT = """\
-You are an AI assistant that extracts a single type of named entity from text.
-Extract every entity of type beeing. This includes people, mythical creatures,
-film or cartoon characters, gods, and other personal entities.
-Use the canonical name that can be deduced from the text. Include relevant
-information about the entity in the language of the source text. Include every
-mention from the text, with its exact spelling and the smallest useful matching
-context. Represent line breaks in JSON strings as \\n.
-Return only JSON in this format:
+You extract named entities of type beeing from the supplied text. This includes
+people, mythical creatures, film or cartoon characters, gods, and other
+personal entities.
+
+Return each entity once. Its top-level `name` may be a canonical name deduced
+from the text. Write `info` in the language of the source text.
+
+Every item in `mentions` must be extractive:
+- Copy `mentions[].name` and `mentions[].context` character-for-character
+  from the supplied text.
+- `context` must be one contiguous substring of the supplied text.
+- `name` must be one contiguous substring of `context`.
+- Preserve capitalization, punctuation, OCR spelling, hyphenation, spaces, and
+  line breaks exactly. Encode source line breaks as `\\n` in JSON.
+- Never paraphrase, normalize, repair OCR, join separated passages, or omit
+  intervening text.
+- Never insert `...` or `…` unless those characters occur literally in the
+  supplied text.
+- Choose the shortest contiguous context that contains the mention and enough
+  local text to identify it.
+- Before returning a mention, verify after JSON decoding that
+  `context in text` and `name in context`.
+- Include every mention that satisfies these rules. If an exact extractive
+  mention cannot be located, omit it rather than inventing or rewriting it.
+
+The top-level entity `name` may be canonicalized, but `mentions[].name` must
+always retain the exact source spelling.
+
+Return only a JSON array in this format:
 ```json
 [
   {{
-    "name": "<entity_name>",
+    "name": "<canonical_entity_name>",
     "type": "beeing",
     "mentions": [
       {{
-        "name": "<exact_mention>",
-        "context": "<minimal_context>"
+        "name": "<verbatim_contiguous_source_name>",
+        "context": "<verbatim_contiguous_source_context>"
       }}
     ],
     "info": "<relevant_info>"
