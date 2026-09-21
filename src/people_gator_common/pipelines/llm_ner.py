@@ -59,8 +59,6 @@ Every item in `mentions` must be extractive:
   supplied text.
 - Choose the shortest contiguous context that contains the mention and enough
   local text to identify it.
-- Before returning a mention, verify after JSON decoding that
-  `context in text` and `name in context`.
 - Include every mention that satisfies these rules. If an exact extractive
   mention cannot be located, omit it rather than inventing or rewriting it.
 
