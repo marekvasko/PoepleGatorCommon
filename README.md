@@ -22,6 +22,25 @@ Input directories can be:
 - Storage-relative paths resolved by `people_gator_common.filesystem` (local/S3/LakeFS based on `PEOPLEGATOR__STORAGE__...` settings).
 - Explicit remote URIs like `s3://bucket/prefix`.
 
+## Historical face import
+
+Upload raw detections from a tree containing `*.people_gator.jsonl` files as
+unassigned face records. Each face is linked to its typed page source; crop image
+bytes and embeddings are not uploaded.
+
+```bash
+PEOPLE_GATOR_API_USERNAME=test PEOPLE_GATOR_API_PASSWORD=... \
+  people-gator-import-faces /path/to/people_gator__data
+```
+
+Attach an existing `embeddings.npy` artifact (and its adjacent manifest and
+metadata files) without decoding, detecting, aligning, or transforming images:
+
+```bash
+PEOPLE_GATOR_API_USERNAME=test PEOPLE_GATOR_API_PASSWORD=... \
+  people-gator-backfill-face-embeddings /path/to/embeddings.npy
+```
+
 ## LLM NER CLI
 
 The `people-gator-llm-ner` command extracts named entities from PeopleGator

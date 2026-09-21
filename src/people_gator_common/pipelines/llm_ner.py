@@ -17,10 +17,11 @@ import os
 import posixpath
 import re
 from typing import Any, Literal
+import uuid
 
 from fuzzysearch import find_near_matches
 from openrouter import OpenRouter
-from pydantic import BaseModel, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
 
 from people_gator_common.filesystem import (
     glob as storage_glob,
@@ -37,6 +38,9 @@ DEFAULT_INPUT_PREFIX = "page-layouts"
 DEFAULT_OUTPUT_PREFIX = "page-named-entities"
 DEFAULT_POSTPROCESSED_OUTPUT_PREFIX = "page-named-entities-exact-v4"
 DEFAULT_MENTION_MATCH_SCORE_CUTOFF = 80.0
+
+# Stable namespace for chunk UUIDs derived from chunk text (uuid5/SHA-1).
+CHUNK_ID_NAMESPACE = uuid.UUID("d4f9a3c2-7b1e-4e6a-9f2d-8c5b1a0e4d77")
 
 PROMPT = """\
 You extract named entities of type beeing from the supplied text. This includes
@@ -88,8 +92,8 @@ Here is the text:
 ```
 """
 
-ReasoningEffort = Literal["low", "medium", "high"]
-Span = tuple[int, int]
+type ReasoningEffort = Literal["low", "medium", "high"]
+type Span = tuple[int, int]
 
 
 class EntityType(StrEnum):
@@ -118,6 +122,7 @@ class NamedEntityMention(BaseModel):
     exact_context: str | None = None
     exact_name: str | None = None
     exact_method: ExactMatchMethod | None = None
+    chunk_id: uuid.UUID | None = None
 
 
 class NamedEntity(BaseModel):
@@ -131,9 +136,22 @@ class NamedEntity(BaseModel):
 class ChunkNerBase(BaseModel):
     """Base class for text chunk outputs from the LLM."""
 
-    text: str
+    chunk_id: uuid.UUID | None = None
+    text: str = Field(validation_alias=AliasChoices("text", "chunk_text"))
     valid_entities: list[NamedEntity]
     invalid_entities: list[Any]
+
+    @model_validator(mode="after")
+    def _assign_stable_chunk_id(self) -> ChunkNerBase:
+        """Derive a stable chunk UUID from the chunk text via SHA-1 (uuid5).
+
+        Re-running the pipeline on the same text yields the same ``chunk_id``,
+        so saved outputs are reproducible and idempotent. Chunks with
+        identical text share the same identity by design.
+        """
+        if self.chunk_id is None:
+            self.chunk_id = uuid.uuid5(CHUNK_ID_NAMESPACE, self.text)
+        return self
 
 class ChunkMetadataBase(BaseModel):
     """Line range for the chunk at the same list index."""
@@ -326,7 +344,7 @@ def _find_fuzzy_span(
     return match.start, match.end
 
 
-def _normalize_with_offsets(value: str) -> tuple[str, list[tuple[int, int]]]:
+def normalize_with_offsets(value: str) -> tuple[str, list[tuple[int, int]]]:
     """Normalize case, whitespace, and line hyphenation while retaining offsets."""
     normalized: list[str] = []
     offsets: list[tuple[int, int]] = []
@@ -426,8 +444,8 @@ def _find_normalized_span(
     score_cutoff: float,
 ) -> Span | None:
     """Find an exact or fuzzy normalized value and map it to source offsets."""
-    normalized_text, text_offsets = _normalize_with_offsets(text)
-    normalized_value, _ = _normalize_with_offsets(value)
+    normalized_text, text_offsets = normalize_with_offsets(text)
+    normalized_value, _ = normalize_with_offsets(value)
     if not normalized_value:
         return None
 
@@ -1063,6 +1081,7 @@ __all__ = [
     "ChunkNerLLM",
     "ChunkNerBase",
     "chunk_lines",
+    "normalize_with_offsets",
     "find_exact_context_and_name",
     "iter_peoplegator_pages",
     "page_to_lines_and_identifiers",
