@@ -122,61 +122,64 @@ class NamedEntityMention(BaseModel):
 
 class NamedEntity(BaseModel):
     """An entity extracted from text, without page or storage metadata."""
-
     name: str
     type: EntityType
     mentions: list[NamedEntityMention]
     info: str
 
 
-class TextChunkNerOutput(BaseModel):
-    """Pure text/LLM result for one chunk."""
+class ChunkNerBase(BaseModel):
+    """Base class for text chunk outputs from the LLM."""
 
-    chunk_text: str
-    prompt: str
-    reasoning: str
-    raw_output: str
+    text: str
     valid_entities: list[NamedEntity]
     invalid_entities: list[Any]
 
-
-class ChunkMetadata(BaseModel):
+class ChunkMetadataBase(BaseModel):
     """Line range for the chunk at the same list index."""
+    start_line: int # Inclusive start line of the chunk.
+    end_line: int # Exclusive end line of the chunk.
 
-    start_line: int
-    end_line: int
-
-
-class TextNerOutput(BaseModel):
-    """Pure text/LLM output with no page or storage metadata."""
+class DocumentNerBase[T: ChunkNerBase](BaseModel):
+    """Base class for document-level metadata."""
 
     text: str
-    chunks: list[TextChunkNerOutput]
-    chunk_metadata: list[ChunkMetadata]
+    chunks: list[T]
+    chunk_metadata: list[ChunkMetadataBase]
+
+class LLMBase(BaseModel):
+    """Generic LLM output for text chunks."""
+    text: str
+    prompt: str
+    reasoning: str
+    raw_output: str
+
+class ChunkNerLLM(ChunkNerBase, LLMBase):
+    """Pure text/LLM result for one chunk."""
 
 
-class LineMapping(BaseModel):
+class PageLineMapping(BaseModel):
     region_id: str
     line_id: str
     
-class LineCharMapping(BaseModel):
+class PageCharMapping(BaseModel):
     region_id: str
     line_id: str
     char_index: int
 
 
-class PageChunkMetadata(ChunkMetadata):
+class PageChunkMetadata(ChunkMetadataBase):
     """Page-specific metadata for the chunk at the same list index."""
+    line_mapping: list[PageLineMapping]
 
-    line_mapping: list[LineMapping]
 
 
-class PageNersOutput(TextNerOutput):
+class PageNer(DocumentNerBase[ChunkNerLLM]):
     """Text NER output enriched only with PeopleGator page metadata."""
-
     library: str
     document_id: str
     page_id: str
+    chunks: list[ChunkNerLLM]
     chunk_metadata: list[PageChunkMetadata]
 
 
@@ -635,7 +638,7 @@ def process_chunk(
     client: Any,
     model: str = DEFAULT_MODEL,
     reasoning_effort: ReasoningEffort = "low",
-) -> TextChunkNerOutput:
+) -> ChunkNerLLM:
     """Extract and validate entities from one string of text."""
     prompt = PROMPT.format(text=text)
     response = client.chat.send(
@@ -649,8 +652,8 @@ def process_chunk(
     if not isinstance(raw_reasoning, str):
         raw_reasoning = str(raw_reasoning)
     if not isinstance(raw_content, str):
-        return TextChunkNerOutput(
-            chunk_text=text,
+        return ChunkNerLLM(
+            text=text,
             prompt=prompt,
             reasoning=raw_reasoning,
             raw_output="",
@@ -689,8 +692,8 @@ def process_chunk(
             invalid_entity = entity.model_copy(update={"mentions": unmatched_mentions})
             invalid_entities.append(invalid_entity.model_dump(mode="json"))
 
-    return TextChunkNerOutput(
-        chunk_text=text,
+    return ChunkNerLLM(
+        text=text,
         prompt=prompt,
         reasoning=raw_reasoning,
         raw_output=raw_content,
@@ -707,14 +710,14 @@ def process_text_lines(
     reasoning_effort: ReasoningEffort = "low",
     min_characters_in_chunk: int = DEFAULT_MIN_CHARACTERS_IN_CHUNK,
     overlap_lines: int = DEFAULT_OVERLAP_LINES,
-) -> TextNerOutput:
+) -> DocumentNerBase[ChunkNerLLM]:
     """Chunk text lines and run LLM NER without any page or I/O concerns."""
     chunks, chunk_line_ranges = chunk_lines(
         lines,
         min_characters_in_chunk=min_characters_in_chunk,
         overlap_lines=overlap_lines,
     )
-    return TextNerOutput(
+    return DocumentNerBase(
         text=lines_to_text(lines),
         chunks=[
             process_chunk(
@@ -726,7 +729,7 @@ def process_text_lines(
             for chunk in chunks
         ],
         chunk_metadata=[
-            ChunkMetadata(start_line=start_line, end_line=end_line)
+            ChunkMetadataBase(start_line=start_line, end_line=end_line)
             for start_line, end_line in chunk_line_ranges
         ],
     )
@@ -773,10 +776,10 @@ def iter_peoplegator_pages(input_prefix: str | os.PathLike[str]) -> Iterator[Pag
 
 def page_to_lines_and_identifiers(
     page: Mapping[str, Any],
-) -> tuple[list[str], list[LineMapping]]:
+) -> tuple[list[str], list[PageLineMapping]]:
     """Adapt a PeopleGator page layout to aligned text lines and identifiers."""
     lines: list[str] = []
-    identifiers: list[LineMapping] = []
+    identifiers: list[PageLineMapping] = []
     regions = page.get("regions", [])
     if not isinstance(regions, list):
         return lines, identifiers
@@ -794,7 +797,7 @@ def page_to_lines_and_identifiers(
             transcription = line.get("transcription", "")
             lines.append("" if transcription is None else str(transcription))
             identifiers.append(
-                LineMapping(
+                PageLineMapping(
                     region_id=region_id,
                     line_id=str(line.get("id", "")),
                 )
@@ -813,7 +816,7 @@ def process_page(
     reasoning_effort: ReasoningEffort = "low",
     min_characters_in_chunk: int = DEFAULT_MIN_CHARACTERS_IN_CHUNK,
     overlap_lines: int = DEFAULT_OVERLAP_LINES,
-) -> PageNersOutput:
+) -> PageNer:
     """Adapt one PeopleGator layout around the pure text processor."""
     lines, line_identifiers = page_to_lines_and_identifiers(page)
     text_output = process_text_lines(
@@ -834,7 +837,7 @@ def process_page(
         )
         for metadata in text_output.chunk_metadata
     ]
-    return PageNersOutput(
+    return PageNer(
         library=library,
         document_id=document_id,
         page_id=page_id,
@@ -1046,19 +1049,19 @@ __all__ = [
     "DEFAULT_POSTPROCESSED_OUTPUT_PREFIX",
     "DEFAULT_MODEL",
     "DEFAULT_OVERLAP_LINES",
-    "ChunkMetadata",
+    "ChunkMetadataBase",
     "EntityType",
     "ExactMatchMethod",
-    "LineMapping",
+    "PageLineMapping",
     "LlmNerPostprocessSummary",
     "LlmNerRunSummary",
     "NamedEntity",
     "NamedEntityMention",
     "PageChunkMetadata",
     "PageInput",
-    "PageNersOutput",
-    "TextChunkNerOutput",
-    "TextNerOutput",
+    "PageNer",
+    "ChunkNerLLM",
+    "ChunkNerBase",
     "chunk_lines",
     "find_exact_context_and_name",
     "iter_peoplegator_pages",
