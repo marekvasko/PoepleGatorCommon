@@ -17,6 +17,7 @@ import posixpath
 import re
 from typing import Any, Literal
 
+from fuzzysearch import find_near_matches
 from openrouter import OpenRouter
 from pydantic import BaseModel, ValidationError
 
@@ -33,6 +34,7 @@ DEFAULT_MIN_CHARACTERS_IN_CHUNK = 2048
 DEFAULT_OVERLAP_LINES = 1
 DEFAULT_INPUT_PREFIX = "page-layouts"
 DEFAULT_OUTPUT_PREFIX = "page-named-entities"
+DEFAULT_MENTION_MATCH_SCORE_CUTOFF = 80.0
 
 PROMPT = """\
 You are an AI assistant that extracts a single type of named entity from text.
@@ -80,6 +82,8 @@ class EntityType(StrEnum):
 class NamedEntityMention(BaseModel):
     context: str
     name: str
+    exact_context: str | None = None
+    exact_name: str | None = None
 
 
 class NamedEntity(BaseModel):
@@ -236,6 +240,72 @@ def parse_json_result(response: str) -> list[Any]:
     return []
 
 
+def _find_closest_substring(
+    text: str,
+    value: str,
+    *,
+    score_cutoff: float,
+) -> str | None:
+    """Return the closest qualifying span as a literal slice of ``text``."""
+    exact_start = text.find(value)
+    if exact_start >= 0:
+        return value
+
+    max_l_dist = int(len(value) * (100 - score_cutoff) / 100)
+    if max_l_dist == 0:
+        return None
+    matches = find_near_matches(value, text, max_l_dist=max_l_dist)
+    if not matches:
+        return None
+    match = min(
+        matches,
+        key=lambda item: (
+            item.dist,
+            abs((item.end - item.start) - len(value)),
+            item.start,
+        ),
+    )
+    return text[match.start : match.end]
+
+
+def find_exact_context_and_name(
+    text: str,
+    context: str,
+    name: str,
+    *,
+    score_cutoff: float = DEFAULT_MENTION_MATCH_SCORE_CUTOFF,
+) -> tuple[str | None, str | None]:
+    """Map an LLM mention back to literal substrings of its source text.
+
+    The context is aligned first so that it can disambiguate repeated names.
+    The mention name is then aligned only within that matched context. Each
+    non-``None`` result is sliced from its containing source, which guarantees
+    ``exact_context in text`` and ``exact_name in exact_context``.
+    """
+    if not 0 <= score_cutoff <= 100:
+        raise ValueError("score_cutoff must be between 0 and 100")
+    if not text or not context:
+        return None, None
+
+    exact_context = _find_closest_substring(
+        text,
+        context,
+        score_cutoff=score_cutoff,
+    )
+    if exact_context is None:
+        return None, None
+
+    if not name:
+        return exact_context, None
+
+    exact_name = _find_closest_substring(
+        exact_context,
+        name,
+        score_cutoff=score_cutoff,
+    )
+    return exact_context, exact_name
+
+
 def process_chunk(
     text: str,
     *,
@@ -269,9 +339,17 @@ def process_chunk(
     invalid_entities: list[Any] = []
     for entity_data in parse_json_result(raw_content):
         try:
-            valid_entities.append(NamedEntity.model_validate(entity_data))
+            entity = NamedEntity.model_validate(entity_data)
         except ValidationError:
             invalid_entities.append(entity_data)
+            continue
+        for mention in entity.mentions:
+            mention.exact_context, mention.exact_name = find_exact_context_and_name(
+                text,
+                mention.context,
+                mention.name,
+            )
+        valid_entities.append(entity)
 
     return TextChunkNerOutput(
         chunk_text=text,
@@ -551,6 +629,7 @@ def run_llm_ner_pipeline(
 
 __all__ = [
     "DEFAULT_INPUT_PREFIX",
+    "DEFAULT_MENTION_MATCH_SCORE_CUTOFF",
     "DEFAULT_MIN_CHARACTERS_IN_CHUNK",
     "DEFAULT_OUTPUT_PREFIX",
     "DEFAULT_MODEL",
@@ -567,6 +646,7 @@ __all__ = [
     "TextChunkNerOutput",
     "TextNerOutput",
     "chunk_lines",
+    "find_exact_context_and_name",
     "iter_peoplegator_pages",
     "page_to_lines_and_identifiers",
     "parse_json_result",

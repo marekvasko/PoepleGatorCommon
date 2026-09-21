@@ -9,6 +9,7 @@ from fsspec.implementations.local import LocalFileSystem
 import people_gator_common.filesystem as storage
 from people_gator_common.pipelines.llm_ner import (
     chunk_lines,
+    find_exact_context_and_name,
     parse_json_result,
     PageNersOutput,
     process_page,
@@ -73,6 +74,28 @@ def test_parse_json_result_accepts_fenced_json_and_surrounding_text() -> None:
     ]
 
 
+def test_find_exact_context_and_name_returns_source_substrings() -> None:
+    text = "Before Ada Lovelace wrote notes. After"
+
+    exact_context, exact_name = find_exact_context_and_name(
+        text,
+        "Ada Lovelace wrote note.",
+        "Ava Lovelace",
+    )
+
+    assert exact_context == "Ada Lovelace wrote notes."
+    assert exact_name == "Ada Lovelace"
+    assert exact_context in text
+    assert exact_name in exact_context
+
+
+def test_find_exact_context_and_name_rejects_unrelated_text() -> None:
+    assert find_exact_context_and_name("Ada was here.", "unrelated", "Nobody") == (
+        None,
+        None,
+    )
+
+
 def test_text_processing_has_no_page_or_source_metadata() -> None:
     result = process_text_lines(
         ["Ada"],
@@ -85,6 +108,14 @@ def test_text_processing_has_no_page_or_source_metadata() -> None:
     assert "line_mapping" not in dumped_chunk
     assert "source" not in dumped_entity
     assert set(dumped_entity) == {"name", "type", "mentions", "info"}
+    assert dumped_entity["mentions"] == [
+        {
+            "context": "Ada",
+            "name": "Ada",
+            "exact_context": "Ada",
+            "exact_name": "Ada",
+        }
+    ]
 
 
 def test_page_keeps_metadata_top_level_and_chunk_responses_separate() -> None:
