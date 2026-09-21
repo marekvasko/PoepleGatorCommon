@@ -3,7 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from people_gator_common.pipelines.llm_ner import NamedEntity
-from people_gator_common.pipelines.ner_clusters import llm_disambiguate_entities
+from people_gator_common.pipelines.ner_clusters import (
+    llm_disambiguate_entities,
+    parse_json_object,
+)
 
 
 class FakeOpenRouter:
@@ -27,6 +30,33 @@ def _entity(name: str, info: str) -> NamedEntity:
         mentions=[],
         info=info,
     )
+
+
+def test_parse_json_object_repairs_unescaped_quotes_inside_descriptions() -> None:
+    response = (
+        '{"action":"merge","candidate_index":4,'
+        '"short_description":"Byla oslovována titulem „Vaše milost".",'
+        '"long_description":"Říkalo se jí „gnädige Frau" a měla komornou."}'
+    )
+
+    parsed = parse_json_object(response)
+
+    assert parsed["action"] == "merge"
+    assert parsed["candidate_index"] == 4
+    assert parsed["short_description"] == ('Byla oslovována titulem „Vaše milost".')
+    assert parsed["long_description"] == (
+        'Říkalo se jí „gnädige Frau" a měla komornou.'
+    )
+
+
+def test_parse_json_object_preserves_unicode_and_raw_control_characters() -> None:
+    text = "Čeština – „uvozovky“; Ελληνικά; 日本語; العربية; 😀; e\u0301; \u2028\u2029"
+    controls = "\n\t" + chr(0) + chr(31)
+    response = f"\ufeff{{\"text\":\"{text}{controls}\"}}"
+
+    parsed = parse_json_object(response)
+
+    assert parsed["text"] == text + controls
 
 
 def test_singleton_copies_information_and_uses_its_exact_index() -> None:

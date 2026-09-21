@@ -86,13 +86,24 @@ For every output cluster:
 - `short_description`: for a multi-record cluster, write exactly one factual
   sentence useful for identifying the person.
 - `long_description`: for a multi-record cluster, write a coherent short
-  article that combines the supplied facts without repetition.
+  article that combines the supplied facts without repetition and is purely
+  based on input evidence, no external knowledge.
 
 Descriptions may use only facts in member records' `information` fields. Keep
 their predominant language. Do not add background knowledge, guesses, or facts
 inferred only from a name. If a cluster contains one record, copy that record's
 `information` unchanged into both description fields and use `[index]` as
 its `entity_indices`.
+
+Escape any special JSON characters, such as quotes (" should be \\" in any JSON
+text field), any backslashes (\\ should be \\\\ in any JSON text field), and
+control characters (\\n, \\r, \\t, etc.), to ensure valid JSON output.
+
+Do not include information about availability of information. Example what not to inlude 
+in any text: No other information is available. Just leave it out. Also do not leak any 
+information from incorrect found records. Keep it only based aroud the current evidence.
+No negative knowledge claims should be included either i.e. he was not born in a certain 
+place or did not have a certain occupation.
 
 Return only this JSON shape, with one object per resolved person:
 {{"clusters":[{{"name":"...","short_description":"...","long_description":"...","entity_indices":[1]}}]}}
@@ -128,7 +139,7 @@ class DisambiguatedNamedEntity(BaseModel):
     long_description: str = ""
     entity_indices: list[int]
     entities: list[NamedEntity] | None = None
-    
+
     @classmethod
     def from_named_entity(
         cls,
@@ -159,8 +170,48 @@ class PageNerClusters(BaseModel):
     clusters: list[DisambiguationOutput]
 
 
+def _escape_unescaped_string_quotes(candidate: str) -> str:
+    """Escape model-generated quotes that cannot close a JSON string.
+
+    This intentionally narrow repair runs only after strict JSON parsing fails.
+    A quote is treated as an interior quote when the next non-whitespace
+    character cannot legally follow the end of a JSON string.
+    """
+    output: list[str] = []
+    in_string = False
+    escaped = False
+    for index, character in enumerate(candidate):
+        if not in_string:
+            output.append(character)
+            if character == "\"":
+                in_string = True
+            continue
+        if escaped:
+            output.append(character)
+            escaped = False
+            continue
+        if character == "\\":
+            output.append(character)
+            escaped = True
+            continue
+        if character != "\"":
+            output.append(character)
+            continue
+
+        lookahead = index + 1
+        while lookahead < len(candidate) and candidate[lookahead].isspace():
+            lookahead += 1
+        following = candidate[lookahead] if lookahead < len(candidate) else ""
+        if not following or following in ",:}]":
+            output.append(character)
+            in_string = False
+        else:
+            output.append("\\\"")
+    return "".join(output)
+
+
 def parse_json_object(response: str) -> dict[str, Any]:
-    """Parse a JSON object from a plain or Markdown-fenced model response."""
+    """Parse a Unicode JSON object from a plain or Markdown-fenced model response."""
     candidates: list[str] = [
         match.group(1).strip()
         for match in re.finditer(
@@ -178,13 +229,20 @@ def parse_json_object(response: str) -> dict[str, Any]:
 
     seen: set[str] = set()
     for candidate in candidates:
+        candidate = candidate.lstrip("\ufeff")
         if not candidate or candidate in seen:
             continue
         seen.add(candidate)
         try:
-            result = json.loads(candidate)
+            result = json.loads(candidate, strict=False)
         except json.JSONDecodeError:
-            continue
+            repaired = _escape_unescaped_string_quotes(candidate)
+            if repaired == candidate:
+                continue
+            try:
+                result = json.loads(repaired, strict=False)
+            except json.JSONDecodeError:
+                continue
         if isinstance(result, dict):
             return result
     return {}
@@ -309,8 +367,8 @@ def fuzzy_score_form_aliases(
         raise ValueError(f"Invalid aggregation method: {aggregation}")
 
 def score_entities(
-    entities: list[NamedEntity], 
-    mention_weight: float, 
+    entities: list[NamedEntity],
+    mention_weight: float,
     name_weight: float,
     *,
     aggregation: Literal["max", "mean", "min"] = "max"
@@ -405,7 +463,7 @@ def llm_disambiguate_entities(
             DisambiguatedNamedEntity.from_named_entity(1, named_entities[0])
         ], None
     short_named_entities = [
-        NamedEntityShort.from_named_entity(i, entity) 
+        NamedEntityShort.from_named_entity(i, entity)
         for i, entity in enumerate(named_entities, start=1)
     ]
     text = _format_entities(short_named_entities)

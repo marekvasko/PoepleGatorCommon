@@ -22,18 +22,45 @@ from people_gator_common.pipelines.ner_entity_linking import (
 
 
 class FakeOpenRouter:
-    def __init__(self, response: str) -> None:
-        self._response = response
+    def __init__(self, responses: str | list[str]) -> None:
+        self._responses = responses if isinstance(responses, list) else [responses]
         self.calls = 0
         self.prompt = ""
+        self.prompts: list[str] = []
         self.chat = SimpleNamespace(send=self.send)
 
     def send(self, **kwargs: object) -> SimpleNamespace:
-        self.calls += 1
         messages = kwargs["messages"]
         assert isinstance(messages, list)
-        self.prompt = messages[0]["content"]
-        message = SimpleNamespace(content=self._response, reasoning="")
+        self.prompt = messages[-1]["content"]
+        self.prompts.append(self.prompt)
+        response = self._responses[min(self.calls, len(self._responses) - 1)]
+        self.calls += 1
+        message = SimpleNamespace(content=response, reasoning="")
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+class FakeMessageOpenRouter:
+    def __init__(
+        self,
+        *,
+        content: object,
+        reasoning: object = "",
+        reasoning_details: object = None,
+    ) -> None:
+        self._content = content
+        self._reasoning = reasoning
+        self._reasoning_details = reasoning_details
+        self.calls = 0
+        self.chat = SimpleNamespace(send=self.send)
+
+    def send(self, **_kwargs: object) -> SimpleNamespace:
+        self.calls += 1
+        message = SimpleNamespace(
+            content=self._content,
+            reasoning=self._reasoning,
+            reasoning_details=self._reasoning_details,
+        )
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
@@ -192,14 +219,87 @@ def test_create_decision_also_calls_llm_to_force_czech() -> None:
     assert decision.long_description == "Ada Lovelace psala o analytickém stroji."
 
 
+def test_text_content_blocks_are_parsed() -> None:
+    response = (
+        '{"action":"create","candidate_index":null,'
+        '"short_description":"Anglická matematička.",'
+        '"long_description":"Ada Lovelace byla matematička."}'
+    )
+    client = FakeMessageOpenRouter(
+        content=[SimpleNamespace(type="text", text=response)]
+    )
+
+    decision, _ = llm_decide_entity_link(_source(), [], client=client)
+
+    assert client.calls == 1
+    assert decision.action == "create"
+
+
+def test_reasoning_channel_json_is_used_when_content_is_empty() -> None:
+    response = (
+        '{"action":"create","candidate_index":null,'
+        '"short_description":"Anglická matematička.",'
+        '"long_description":"Ada Lovelace byla matematička."}'
+    )
+    client = FakeMessageOpenRouter(content=None, reasoning=response)
+
+    decision, llm = llm_decide_entity_link(_source(), [], client=client)
+
+    assert client.calls == 1
+    assert decision.action == "create"
+    assert llm.raw_output == response
+
+
+def test_invalid_first_response_is_repaired_once() -> None:
+    invalid = (
+        '{"action":"create","candidate_index":null,'
+        '"short_description":"","long_description":""}'
+    )
+    valid = (
+        '{"action":"create","candidate_index":null,'
+        '"short_description":"Anglická matematička.",'
+        '"long_description":"Ada Lovelace psala o analytickém stroji."}'
+    )
+    client = FakeOpenRouter([invalid, valid])
+
+    decision, llm = llm_decide_entity_link(_source(), [], client=client)
+
+    assert client.calls == 2
+    assert "previous response did not satisfy" in client.prompt
+    assert decision.action == "create"
+    assert decision.description_language == "cs"
+    assert "initial" in llm.raw_output
+    assert "repair" in llm.raw_output
+
+
+def test_nested_decision_object_is_accepted_without_retry() -> None:
+    client = FakeOpenRouter(
+        '{"decision":{'
+        '"action":"create","candidate_index":null,'
+        '"short_description":"Anglická matematička.",'
+        '"long_description":"Ada Lovelace byla matematička."}}'
+    )
+
+    decision, _ = llm_decide_entity_link(_source(), [], client=client)
+
+    assert client.calls == 1
+    assert decision.action == "create"
+
+
 def test_missing_translated_descriptions_are_rejected() -> None:
     client = FakeOpenRouter(
         '{"action":"create","candidate_index":null,'
         '"short_description":"","long_description":""}'
     )
 
-    with pytest.raises(RuntimeError, match="omitted Czech descriptions"):
+    with pytest.raises(RuntimeError, match="after one repair attempt") as exc_info:
         llm_decide_entity_link(_source(), [], client=client)
+
+    message = str(exc_info.value)
+    assert client.calls == 2
+    assert "Initial response:" in message
+    assert "Repair response:" in message
+    assert "short_description" in message
 
 
 def test_link_source_cluster_saves_decision_without_entity_mutation() -> None:
