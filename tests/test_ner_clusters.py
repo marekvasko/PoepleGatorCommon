@@ -52,11 +52,39 @@ def test_parse_json_object_repairs_unescaped_quotes_inside_descriptions() -> Non
 def test_parse_json_object_preserves_unicode_and_raw_control_characters() -> None:
     text = "Čeština – „uvozovky“; Ελληνικά; 日本語; العربية; 😀; e\u0301; \u2028\u2029"
     controls = "\n\t" + chr(0) + chr(31)
-    response = f"\ufeff{{\"text\":\"{text}{controls}\"}}"
+    response = f'\ufeff{{"text":"{text}{controls}"}}'
 
     parsed = parse_json_object(response)
 
     assert parsed["text"] == text + controls
+
+
+def test_parse_json_object_repairs_interior_quote_before_prose_comma() -> None:
+    response = (
+        '{"action":"create","candidate_index":null,'
+        '"short_description":"„Der Führer" bylo označení pro Adolfa Hitlera.",'
+        '"long_description":"Označení znělo „Der Führer und Oberste '
+        'Befehlshaber der Wehrmacht", tedy Vůdce a nejvyšší velitel."}'
+    )
+
+    parsed = parse_json_object(response)
+
+    assert parsed["action"] == "create"
+    assert parsed["short_description"] == (
+        '„Der Führer" bylo označení pro Adolfa Hitlera.'
+    )
+    assert parsed["long_description"] == (
+        'Označení znělo „Der Führer und Oberste Befehlshaber der Wehrmacht", '
+        "tedy Vůdce a nejvyšší velitel."
+    )
+
+
+def test_parse_json_object_repairs_invalid_backslash_escape() -> None:
+    response = '{"description":"Steiner\\Archiv"}'
+
+    parsed = parse_json_object(response)
+
+    assert parsed["description"] == r"Steiner\Archiv"
 
 
 def test_singleton_copies_information_and_uses_its_exact_index() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 
 import dotenv
@@ -17,6 +18,7 @@ from people_gator_common.pipelines.ner_entity_linking import (
     DEFAULT_PROGRESS_INTERVAL_SECONDS,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     EntityLinkingConfig,
+    rollback_latest_entity_linking_run,
     run_ner_entity_linking_pipeline,
 )
 
@@ -27,8 +29,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Search People Gator for each disambiguated NER cluster, let an "
-            "LLM propose an existing entity or a new one, and save the decision "
-            "without changing API entities."
+            "LLM choose an existing entity or a new one, apply the decision, "
+            "and upload source text mentions with a durable audit trail."
         )
     )
     parser.add_argument(
@@ -84,6 +86,19 @@ def parse_args() -> argparse.Namespace:
         help="Process at most this many new pages.",
     )
     parser.add_argument(
+        "--parallel-entities",
+        "--parallel-pages",
+        "--parallel-requests",
+        dest="parallel_pages",
+        type=int,
+        default=4,
+        help=(
+            "Maximum number of entity searches and LLM decisions in flight "
+            "(default: %(default)s). The older --parallel-pages and "
+            "--parallel-requests aliases are also accepted."
+        ),
+    )
+    parser.add_argument(
         "--request-timeout-seconds",
         type=float,
         default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -101,6 +116,21 @@ def parse_args() -> argparse.Namespace:
         help="Reprocess pages whose entity-link output already exists.",
     )
     parser.add_argument(
+        "--decision-only",
+        action="store_true",
+        help="Save decisions without changing entities or uploading mentions.",
+    )
+    parser.add_argument(
+        "--rollback-latest",
+        action="store_true",
+        help="Reverse the latest journaled page instead of processing inputs.",
+    )
+    parser.add_argument(
+        "--force-rollback",
+        action="store_true",
+        help="Rollback even if a recorded entity has since changed.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -109,14 +139,27 @@ def parse_args() -> argparse.Namespace:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    config = EntityLinkingConfig(
+        base_url=args.api_base_url,
+        bearer_token=args.bearer_token,
+        username=args.username,
+        password=args.password,
+        timeout_seconds=args.request_timeout_seconds,
+    )
+    if args.rollback_latest:
+        result = await rollback_latest_entity_linking_run(
+            config=config,
+            output_prefix=args.output_prefix,
+            force=args.force_rollback,
+        )
+        print(
+            f"Rolled back {result.rolled_back_mutations} mutations from "
+            f"{result.audit_path}"
+        )
+        return 0
+
     summary = await run_ner_entity_linking_pipeline(
-        config=EntityLinkingConfig(
-            base_url=args.api_base_url,
-            bearer_token=args.bearer_token,
-            username=args.username,
-            password=args.password,
-            timeout_seconds=args.request_timeout_seconds,
-        ),
+        config=config,
         input_prefix=args.input_prefix,
         output_prefix=args.output_prefix,
         model=args.model,
@@ -124,12 +167,16 @@ async def _run(args: argparse.Namespace) -> int:
         force=args.force,
         max_pages=args.max_pages,
         progress_interval_seconds=args.progress_interval,
+        mode="decision-only" if args.decision_only else "apply",
+        parallel_pages=args.parallel_pages,
     )
     print(
         f"NER entity linking complete: {summary.processed_pages} processed, "
         f"{summary.skipped_pages} skipped; {summary.merge_decisions} merge and "
         f"{summary.create_decisions} create decisions saved for "
-        f"{summary.source_entities} source entities"
+        f"{summary.source_entities} source entities; "
+        f"{summary.entity_mutations} entity mutations and "
+        f"{summary.uploaded_mentions} mentions applied"
     )
     return 0
 
@@ -137,6 +184,8 @@ async def _run(args: argparse.Namespace) -> int:
 def main() -> int:
     args = parse_args()
     configure_logging(args.log_level)
+    logging.getLogger("httpx").disabled = True
+    logging.getLogger("httpcore").disabled = True
     return asyncio.run(_run(args))
 
 

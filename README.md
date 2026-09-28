@@ -73,15 +73,39 @@ overwrite options.
 
 The `people-gator-ner-entity-linking` command reads the per-page output of
 `people-gator-ner-clusters`. For every resolved source cluster it searches the
-People Gator API using only repeated `q` parameters, fetches full details for
-each returned entity, and asks the configured OpenRouter model whether to
-propose a merge or a new entity. Short and long descriptions in every saved
-decision are rendered in Czech (`cs`), including when database descriptions are
-in another language.
+People Gator API with repeated `query.text` parameters, fetches full details for
+each returned entity, and asks the configured OpenRouter model whether to merge
+with one candidate or create a person. Short and long descriptions are rendered
+in Czech (`cs`), including when database descriptions are in another language.
 
-This command is proposal-only: it does not `POST` or `PATCH` entities. Its
-per-page JSON output retains the complete source cluster, hydrated candidates,
-LLM request/response, normalized decision, and selected entity ID for a merge.
+By default the decision is applied: existing entities are patched, new entities
+are posted, the page source is resolved through `/api/v1/pages/lookup`, and all
+extractive text mentions are uploaded. The per-page JSON is a durable audit
+journal containing the source evidence, candidates, LLM request/response,
+decision, original and resulting entity states, and every created mention. It is
+checkpointed after each API mutation. The `modifications.jsonl` file under the
+output prefix is an append-only record of each applied operation with its
+before and after states.
+
+When page lookup returns 404, the pipeline registers the missing page through
+`POST /api/v1/pages` and uses the returned `source_id` for its mentions. A
+concurrent-registration 409 is resolved by repeating the lookup.
+
+If a live run is interrupted, rerun the same command with the same output
+prefix. Incomplete apply journals are resumed automatically; recorded entities
+and mentions are not posted twice. Do not use `--force` for recovery.
+
+The overall ETA is calculated from document-pages that will actually run;
+completed outputs and pages beyond `--max-pages` are excluded. Use
+`--parallel-entities 4` to keep up to four entity searches and LLM decisions
+in flight across page files (the default). Results are committed in input order. API access
+is serialized. In-flight decisions that include an edited candidate are
+cancelled and restarted; every candidate list changed by an earlier mutation
+is sent back to the model before it is applied. The
+`--parallel-pages` and `--parallel-requests` options remain aliases.
+Use `--progress-interval 5` for updates every five seconds (default: 30 seconds).
+The CLI suppresses `httpx` and `httpcore` request logs, leaving pipeline
+progress and decision logs visible.
 
 ```bash
 PEOPLE_GATOR_API_BEARER_TOKEN=... OPENROUTER_API_KEY=... \
@@ -89,4 +113,16 @@ PEOPLE_GATOR_API_BEARER_TOKEN=... OPENROUTER_API_KEY=... \
 ```
 
 Instead of an existing bearer token, set `PEOPLE_GATOR_API_USERNAME` and
-`PEOPLE_GATOR_API_PASSWORD` to use the OAuth2 password flow with browse scope.
+`PEOPLE_GATOR_API_PASSWORD` to use the OAuth2 password flow. Apply mode requests
+`browse`, `annotate`, and `ingest` scopes.
+
+Use `--decision-only` to retain the old non-mutating behavior. To reverse the
+newest journaled page (mentions first, then entities in reverse order), use:
+
+```bash
+uv run people-gator-ner-entity-linking --rollback-latest
+```
+
+Rollback requires `admin` in addition to browse/annotate permissions. It checks
+that an entity still matches the journaled post-change state before restoring or
+deleting it; `--force-rollback` overrides that conflict check.

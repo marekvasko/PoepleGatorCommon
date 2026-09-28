@@ -41,11 +41,14 @@ dependencies = [
     "fuzzysearch>=0.8.1",
     "weaviate-client>=4.21.2",
     "openrouter>=1.1.157",
+    "aiofile>=3.12.3",
+    "datamodel-code-generator>=0.83.0",
 ]
 
 [project.scripts]
 people-gator-wikidata = "people_gator_common.cli.wikidata_pipeline_cli:main"
 people-gator-wikidata-v2 = "people_gator_common.cli.wikidata_v2_pipeline_cli:main"
+people-gator-wikidata-dump = "people_gator_common.cli.wikidata_dump_cli:main"
 people-gator-wikicommons = "people_gator_common.cli.wikicommons_pipeline_cli:main"
 people-gator-nlcr = "people_gator_common.cli.nlcr_pipeline_cli:main"
 people-gator-obalkyknih-html = "people_gator_common.cli.obalkyknih_html_pipeline_cli:main"

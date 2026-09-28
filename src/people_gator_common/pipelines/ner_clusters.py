@@ -112,6 +112,7 @@ Input records:
 {entities}
 """
 
+
 class NamedEntityShort(BaseModel):
     """A single named entity mention, derived from a full NamedEntity."""
 
@@ -127,13 +128,16 @@ class NamedEntityShort(BaseModel):
             ],
             information=entity.info,
         )
+
     index: int
     name: str
     aliases: list[str]
     information: str
 
+
 class DisambiguatedNamedEntity(BaseModel):
     """One output cluster from the disambiguation LLM."""
+
     name: str
     short_description: str = ""
     long_description: str = ""
@@ -154,16 +158,22 @@ class DisambiguatedNamedEntity(BaseModel):
             entities=[named_entity],
         )
 
+
 class DisambiguationOutput(LLMBase):
     """Pure disambiguation result for one cluster, with its LLM record."""
+
     clusters: list[DisambiguatedNamedEntity]
+
 
 class DisambiguationResult(BaseModel):
     """Validated schema of the disambiguation LLM response."""
+
     clusters: list[DisambiguatedNamedEntity]
+
 
 class PageNerClusters(BaseModel):
     """Clustered and disambiguated entities for one PeopleGator page."""
+
     library: str
     document_id: str
     page_id: str
@@ -171,42 +181,70 @@ class PageNerClusters(BaseModel):
 
 
 def _escape_unescaped_string_quotes(candidate: str) -> str:
-    """Escape model-generated quotes that cannot close a JSON string.
+    """Repair model-generated quotes and backslashes inside JSON strings.
 
     This intentionally narrow repair runs only after strict JSON parsing fails.
-    A quote is treated as an interior quote when the next non-whitespace
-    character cannot legally follow the end of a JSON string.
+    A quote followed by a comma closes a value only when that comma is followed
+    by the next JSON object key. Invalid JSON escapes are treated as literal
+    backslashes. Raw control characters are accepted later via ``strict=False``.
     """
     output: list[str] = []
     in_string = False
-    escaped = False
-    for index, character in enumerate(candidate):
+    index = 0
+    while index < len(candidate):
+        character = candidate[index]
         if not in_string:
             output.append(character)
-            if character == "\"":
+            if character == '"':
                 in_string = True
-            continue
-        if escaped:
-            output.append(character)
-            escaped = False
+            index += 1
             continue
         if character == "\\":
-            output.append(character)
-            escaped = True
+            following = candidate[index + 1] if index + 1 < len(candidate) else ""
+            valid_simple_escape = following in '"\\/bfnrt'
+            valid_unicode_escape = (
+                following == "u"
+                and index + 5 < len(candidate)
+                and all(
+                    value in "0123456789abcdefABCDEF"
+                    for value in candidate[index + 2 : index + 6]
+                )
+            )
+            if valid_unicode_escape:
+                output.append(candidate[index : index + 6])
+                index += 6
+            elif valid_simple_escape:
+                output.append(candidate[index : index + 2])
+                index += 2
+            else:
+                output.append("\\\\")
+                index += 1
             continue
-        if character != "\"":
+        if character != '"':
             output.append(character)
+            index += 1
             continue
 
         lookahead = index + 1
         while lookahead < len(candidate) and candidate[lookahead].isspace():
             lookahead += 1
         following = candidate[lookahead] if lookahead < len(candidate) else ""
-        if not following or following in ",:}]":
+        closes_string = not following or following in ":}]"
+        if following == ",":
+            after_comma = lookahead + 1
+            while after_comma < len(candidate) and candidate[after_comma].isspace():
+                after_comma += 1
+            # parse_json_object only accepts objects. A value-closing quote and
+            # comma must therefore be followed by the next quoted member name.
+            closes_string = (
+                after_comma < len(candidate) and candidate[after_comma] == '"'
+            )
+        if closes_string:
             output.append(character)
             in_string = False
         else:
-            output.append("\\\"")
+            output.append('\\"')
+        index += 1
     return "".join(output)
 
 
@@ -251,9 +289,7 @@ def parse_json_object(response: str) -> dict[str, Any]:
 def _format_entities(entities: list[NamedEntityShort]) -> str:
     """Render numbered entities for the disambiguation prompt."""
     return json.dumps(
-        {
-            "entities": [entity.model_dump() for entity in entities]
-        },
+        {"entities": [entity.model_dump() for entity in entities]},
         ensure_ascii=False,
         indent=2,
     )
@@ -295,9 +331,7 @@ def _clusters_from_response(
 
     # Any entity the LLM dropped is preserved as an information-bearing singleton.
     missing_indices = [
-        index
-        for index in range(1, entity_count + 1)
-        if index not in used_indices
+        index for index in range(1, entity_count + 1) if index not in used_indices
     ]
     if missing_indices:
         logger.warning(
@@ -307,14 +341,13 @@ def _clusters_from_response(
             entity_count,
         )
         output.extend(
-            DisambiguatedNamedEntity.from_named_entity(
-                index, named_entities[index - 1]
-            )
+            DisambiguatedNamedEntity.from_named_entity(index, named_entities[index - 1])
             for index in missing_indices
         )
     if not output:
         return None
     return output, llm
+
 
 def _fit_to_size[T](
     item: list[T] | T,
@@ -328,6 +361,7 @@ def _fit_to_size[T](
             )
         return item
     return [item] * size
+
 
 def fuzzy_score_form_aliases(
     candidates_1: list[str],
@@ -366,12 +400,13 @@ def fuzzy_score_form_aliases(
     else:
         raise ValueError(f"Invalid aggregation method: {aggregation}")
 
+
 def score_entities(
     entities: list[NamedEntity],
     mention_weight: float,
     name_weight: float,
     *,
-    aggregation: Literal["max", "mean", "min"] = "max"
+    aggregation: Literal["max", "mean", "min"] = "max",
 ) -> list[list[float]]:
     entity_scores: list[list[float]] = []
     normalized_mention_weight = mention_weight / (mention_weight + name_weight)
@@ -399,6 +434,7 @@ def score_entities(
             scores.append(score)
         entity_scores.append(scores)
     return entity_scores
+
 
 def cluster_entities(
     entities: list[NamedEntity],
@@ -459,9 +495,7 @@ def llm_disambiguate_entities(
     if not named_entities:
         raise ValueError("named_entities must not be empty")
     if len(named_entities) == 1:
-        return [
-            DisambiguatedNamedEntity.from_named_entity(1, named_entities[0])
-        ], None
+        return [DisambiguatedNamedEntity.from_named_entity(1, named_entities[0])], None
     short_named_entities = [
         NamedEntityShort.from_named_entity(i, entity)
         for i, entity in enumerate(named_entities, start=1)
@@ -665,9 +699,7 @@ def _run_with_client(
             page_input.document_id,
             page_input.page_id,
         )
-        page_ner = PageNer.model_validate_json(
-            storage_read_text(page_input.path)
-        )
+        page_ner = PageNer.model_validate_json(storage_read_text(page_input.path))
         clusters = document_entities_clustering_pipeline(
             page_ner,
             client=client,

@@ -20,15 +20,27 @@ from .queries import (
     build_people_of_property_query,
     build_people_of_property_cursor_query,
 )
-from .fetchers import (   
+from .fetchers import (
     build_property_query_builder,
     fetch_property_values_for_entities,
     fetch_texts_of_entities,
     fetch_people_of_property,
 )
-from .processors import (
-    create_people_of_all, 
-    unique_values_from_csv
+from .processors import create_people_of_all, unique_values_from_csv
+from .dump_parser import (
+    ClaimCsvWriter,
+    FilterCondition,
+    WikiDataItem,
+    WikidataDumpStats,
+    extract_parameter_value,
+    extract_parameter_values,
+    extract_truthy_parameter_values,
+    filter_wikidata_item,
+    gather_claim,
+    iter_wikidata_items,
+    parse_wikidata_dump,
+    parse_wikidata_item,
+    save_parameter_value,
 )
 
 __all__ = [
@@ -53,4 +65,17 @@ __all__ = [
     "is_too_many_requests_error",
     "is_connection_reset_error",
     "is_retryable_http_error",
+    "ClaimCsvWriter",
+    "FilterCondition",
+    "WikiDataItem",
+    "WikidataDumpStats",
+    "extract_parameter_value",
+    "extract_parameter_values",
+    "extract_truthy_parameter_values",
+    "filter_wikidata_item",
+    "gather_claim",
+    "iter_wikidata_items",
+    "parse_wikidata_dump",
+    "parse_wikidata_item",
+    "save_parameter_value",
 ]

@@ -1,0 +1,84 @@
+# Local Wikidata dump replacement for the former SPARQL-based wikidata_v2 pipeline.
+# input_path accepts an uncompressed .json dump or a .json.gz/.json.bz2 dump.
+input_path: /mnt/hdd/Data/WikiData/latest-all.json.gz
+output_directory: /mnt/hdd/Data/WikiData/wikidata_v2
+
+# Parsing/validation is parallel, while dump reading and CSV writes stay streamed.
+workers: 8
+max_pending: 32
+# Emit progress whenever either threshold is reached.
+progress_every_items: 1000
+progress_every_seconds: 10
+overwrite: false
+# After an interrupted run, resume inclusively at the failed physical dump line.
+# Existing streaming CSVs are validated and appended to; earlier lines are only
+# decompressed/read, not JSON-decoded or validated. CLI equivalent:
+#   --resume-from-line 101302670
+# resume_from_line: 101302670
+
+# Keep the URI representation returned by the old SPARQL pipeline. Set to null
+# if downstream consumers should receive compact Q identifiers instead.
+entity_uri_prefix: "http://www.wikidata.org/entity/"
+
+groups:
+  people:
+    filters:
+      - parameter: P31
+        value: Q5
+    entities_output: people_of_all.csv
+    claims:
+      - claim: P18
+        output: people_of_all_P18.csv
+        value_format: commons_media
+      - claim: P27
+        output: people_of_all_P27.csv
+        unique_output: people_of_all_unique_P27.csv
+      - claim: P1412
+        output: people_of_all_P1412.csv
+        unique_output: people_of_all_unique_P1412.csv
+      - claim: P214
+        output: people_of_all_P214.csv
+        unique_output: people_of_all_unique_P214.csv
+        value_format: plain
+      - claim: P691
+        output: people_of_all_P691.csv
+        unique_output: people_of_all_unique_P691.csv
+        value_format: plain
+      - claim: P569
+        output: people_of_all_P569.csv
+      - claim: P570
+        output: people_of_all_P570.csv
+    text:
+      labels: people_of_all_labels.csv
+      descriptions: people_of_all_descriptions.csv
+      aliases: people_of_all_alt_labels.csv
+
+  characters:
+    # The old query used P31/P279* and therefore included subclasses of Q95074.
+    # This streaming pass uses direct P31 statements only.
+    filters:
+      - parameter: P31
+        value: Q95074
+    entities_output: characters_of_all.csv
+    claims:
+      - claim: P18
+        output: characters_of_all_P18.csv
+        value_format: commons_media
+      - claim: P27
+        output: characters_of_all_P27.csv
+        unique_output: characters_of_all_unique_P27.csv
+      - claim: P1412
+        output: characters_of_all_P1412.csv
+        unique_output: characters_of_all_unique_P1412.csv
+      - claim: P214
+        output: characters_of_all_P214.csv
+        unique_output: characters_of_all_unique_P214.csv
+        value_format: plain
+      - claim: P691
+        output: characters_of_all_P691.csv
+        unique_output: characters_of_all_unique_P691.csv
+        value_format: plain
+    text:
+      labels: characters_of_all_labels.csv
+      descriptions: characters_of_all_descriptions.csv
+      aliases: characters_of_all_alt_labels.csv
