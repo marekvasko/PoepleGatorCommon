@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Annotated, Any, Literal, Optional, TypeAlias, Union
 from uuid import UUID
 
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field, RootModel
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, RootModel, StringConstraints
 
 
 class BodyGetTokenTokenLoginPost(BaseModel):
@@ -39,6 +39,8 @@ class DocumentCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     library: Annotated[str, Field(min_length=1)] = Field(..., title="Library")
     document_id: UUID = Field(..., title="Document Id")
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] | None = None
+
 
 
 class EntityDeleteManyResponse(BaseModel):
@@ -474,6 +476,8 @@ class DocumentResponse(BaseModel):
     url: Annotated[AnyUrl, Field(min_length=1)] = Field(..., title="Url")
     library: Annotated[str, Field(min_length=1)] = Field(..., title="Library")
     document_id: UUID = Field(..., title="Document Id")
+    name: str | None = None
+
 
 
 class FoundDocument(BaseModel):
@@ -491,6 +495,8 @@ class FoundDocument(BaseModel):
     url: Annotated[AnyUrl, Field(min_length=1)] = Field(..., title="Url")
     library: Annotated[str, Field(min_length=1)] = Field(..., title="Library")
     document_id: UUID = Field(..., title="Document Id")
+    name: str | None = None
+
 
 
 class FoundPage(BaseModel):

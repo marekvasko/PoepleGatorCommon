@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field, RootModel, SecretStr
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, RootModel, StringConstraints, SecretStr
 
 
 class GrantType1(RootModel[str]):
@@ -47,6 +47,8 @@ class DocumentCreateRequest(BaseModel):
     )
     library: Annotated[str, Field(min_length=1, title='Library')]
     document_id: Annotated[UUID, Field(title='Document Id')]
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] | None = None
+
 
 
 class EntityDeleteManyResponse(BaseModel):
@@ -552,6 +554,8 @@ class DocumentResponse(BaseModel):
     url: Annotated[AnyUrl, Field(title='Url')]
     library: Annotated[str, Field(min_length=1, title='Library')]
     document_id: Annotated[UUID, Field(title='Document Id')]
+    name: str | None = None
+
 
 
 class EntityCreateRequest(BaseModel):
@@ -761,6 +765,8 @@ class FoundDocument(BaseModel):
     url: Annotated[AnyUrl, Field(title='Url')]
     library: Annotated[str, Field(min_length=1, title='Library')]
     document_id: Annotated[UUID, Field(title='Document Id')]
+    name: str | None = None
+
 
 
 class FoundFace(BaseModel):
