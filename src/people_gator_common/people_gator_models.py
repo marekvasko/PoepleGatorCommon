@@ -9,6 +9,26 @@ from uuid import UUID
 
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field, RootModel, StringConstraints, SecretStr
 
+from datetime import datetime
+from enum import StrEnum as _LinkStrEnum
+from pydantic.experimental.missing_sentinel import MISSING as _LINK_MISSING
+
+class EntityLinkState(_LinkStrEnum):
+    automatic = "automatic"
+    manual = "manual"
+    verified = "verified"
+
+class EntityLinkStateCounts(BaseModel):
+    automatic: int = Field(default=0, ge=0)
+    manual: int = Field(default=0, ge=0)
+    verified: int = Field(default=0, ge=0)
+    unassigned: int = Field(default=0, ge=0)
+    total: int = Field(default=0, ge=0)
+
+class EntityLinkStats(BaseModel):
+    faces: EntityLinkStateCounts = Field(default_factory=EntityLinkStateCounts)
+    mentions: EntityLinkStateCounts = Field(default_factory=EntityLinkStateCounts)
+
 
 class GrantType1(RootModel[str]):
     root: Annotated[str, Field(pattern='^password$', title='Grant Type')]
@@ -396,6 +416,7 @@ class TextMentionCreateRequest(BaseModel):
     """The ID of the entity being mentioned."""
     source_id: Annotated[UUID, Field(title='Source Id')]
     """The ID of the source where the entity name was found."""
+    entity_link_state: EntityLinkState | _LINK_MISSING = _LINK_MISSING
 
 
 class TotalCount23(RootModel[int]):
@@ -409,8 +430,9 @@ class TextMentionPatchBatchItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    entity_id: Annotated[UUID | None, Field(title='Entity Id')]
+    entity_id: UUID | None | _LINK_MISSING = _LINK_MISSING
     mention_id: Annotated[UUID, Field(title='Mention Id')]
+    entity_link_state: EntityLinkState | None | _LINK_MISSING = _LINK_MISSING
 
 
 class TextMentionPatchRequest(BaseModel):
@@ -419,7 +441,8 @@ class TextMentionPatchRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    entity_id: Annotated[UUID | None, Field(title='Entity Id')]
+    entity_id: UUID | None | _LINK_MISSING = _LINK_MISSING
+    entity_link_state: EntityLinkState | None | _LINK_MISSING = _LINK_MISSING
 
 
 class TextMentionResponse(BaseModel):
@@ -433,6 +456,9 @@ class TextMentionResponse(BaseModel):
     context: Annotated[str | None, Field(title='Context')]
     entity_id: Annotated[UUID | None, Field(title='Entity Id')]
     source_id: Annotated[UUID, Field(title='Source Id')]
+    entity_link_state: EntityLinkState | None = None
+    entity_link_verified_by_user_id: UUID | None = None
+    entity_link_verified_at: datetime | None = None
 
 
 class TextMentionSpanModel(BaseModel):
@@ -453,6 +479,9 @@ class TextMentionSpanModel(BaseModel):
     end_line_id: Annotated[str, Field(title='End Line Id')]
     start_character: Annotated[int, Field(ge=0, title='Start Character')]
     end_character: Annotated[int, Field(ge=0, title='End Character')]
+    entity_link_state: EntityLinkState | None = None
+    entity_link_verified_by_user_id: UUID | None = None
+    entity_link_verified_at: datetime | None = None
 
 
 class TokenResponse(BaseModel):
@@ -555,7 +584,7 @@ class DocumentResponse(BaseModel):
     library: Annotated[str, Field(min_length=1, title='Library')]
     document_id: Annotated[UUID, Field(title='Document Id')]
     name: str | None = None
-
+    entity_link_stats: EntityLinkStats = Field(default_factory=EntityLinkStats)
 
 
 class EntityCreateRequest(BaseModel):
@@ -613,6 +642,7 @@ class EntityListFilter(BaseModel):
     """Whether the entity has mentions."""
     has_detections: Annotated[bool | None, Field(title='Has Detections')] = None
     """Whether the entity has detections."""
+    entity_link_state: list[EntityLinkState] | _LINK_MISSING = _LINK_MISSING
 
 
 class EntityResponse(BaseModel):
@@ -639,6 +669,7 @@ class EntityResponse(BaseModel):
     """The NLCR authority identifier for the entity."""
     user_id: Annotated[UUID, Field(title='User Id')]
     """The unique identifier of the user who created or owns the entity."""
+    entity_link_stats: EntityLinkStats = Field(default_factory=EntityLinkStats)
 
 
 class FaceCreateRequest(BaseModel):
@@ -664,8 +695,9 @@ class FaceCreateRequest(BaseModel):
     """The embeddings of the face detection."""
     source_id: Annotated[UUID, Field(title='Source Id')]
     """The unique identifier of the source from which the face was detected. Mandatory."""
-    entity_id: Annotated[UUID | None, Field(title='Entity Id')] = None
+    entity_id: UUID | _LINK_MISSING = _LINK_MISSING
     """The unique identifier of the entity associated with the face detection."""
+    entity_link_state: EntityLinkState | _LINK_MISSING = _LINK_MISSING
 
 
 class FaceModelRegisterRequest(BaseModel):
@@ -694,14 +726,13 @@ class FacePatchBatchItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    entity_id: Annotated[UUID | None, Field(title='Entity Id')] = None
+    entity_id: UUID | None | _LINK_MISSING = _LINK_MISSING
     """The unique identifier of the entity associated with the face detection. If null, the face will be unassigned from any entity. If MISSING, the entity association will not be modified."""
-    embeddings: Annotated[
-        list[ModelEmbeddingFaceModelStub] | None, Field(title='Embeddings')
-    ] = None
+    embeddings: list[ModelEmbeddingFaceModelStub] | _LINK_MISSING = _LINK_MISSING
     """When provided, upsert each named model vector; unmentioned vectors remain unchanged. An empty list is a no-op."""
     detection_id: Annotated[UUID, Field(title='Detection Id')]
     """The unique identifier of the face detection."""
+    entity_link_state: EntityLinkState | None | _LINK_MISSING = _LINK_MISSING
 
 
 class FacePatchRequest(BaseModel):
@@ -710,12 +741,11 @@ class FacePatchRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    entity_id: Annotated[UUID | None, Field(title='Entity Id')] = None
+    entity_id: UUID | None | _LINK_MISSING = _LINK_MISSING
     """The unique identifier of the entity associated with the face detection. If null, the face will be unassigned from any entity. If MISSING, the entity association will not be modified."""
-    embeddings: Annotated[
-        list[ModelEmbeddingFaceModelStub] | None, Field(title='Embeddings')
-    ] = None
+    embeddings: list[ModelEmbeddingFaceModelStub] | _LINK_MISSING = _LINK_MISSING
     """When provided, upsert each named model vector; unmentioned vectors remain unchanged. An empty list is a no-op."""
+    entity_link_state: EntityLinkState | None | _LINK_MISSING = _LINK_MISSING
 
 
 class FaceResponse(BaseModel):
@@ -745,6 +775,9 @@ class FaceResponse(BaseModel):
     """The confidence score of the face detection."""
     embeddings: Annotated[list[str] | None, Field(title='Embeddings')] = None
     """The embedding model identifiers available for the face detection. Embedding vectors are not returned."""
+    entity_link_state: EntityLinkState | None = None
+    entity_link_verified_by_user_id: UUID | None = None
+    entity_link_verified_at: datetime | None = None
 
 
 class FoundDocument(BaseModel):
@@ -961,6 +994,7 @@ class PageResponse(BaseModel):
     library: Annotated[str, Field(min_length=1, title='Library')]
     document_id: Annotated[UUID, Field(title='Document Id')]
     page_id: Annotated[UUID, Field(title='Page Id')]
+    entity_link_stats: EntityLinkStats = Field(default_factory=EntityLinkStats)
 
 
 class RegionLayoutModel(BaseModel):

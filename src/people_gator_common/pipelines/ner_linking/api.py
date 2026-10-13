@@ -79,6 +79,7 @@ def _mention_payloads(
                     "name": name,
                     "context": context or None,
                     "entity_id": entity_id,
+                    "entity_link_state": "automatic",
                     "source_id": source_id,
                 }
             )

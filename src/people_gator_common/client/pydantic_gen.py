@@ -6,6 +6,26 @@ from uuid import UUID
 
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field, RootModel, StringConstraints
 
+from datetime import datetime
+from enum import StrEnum as _LinkStrEnum
+from pydantic.experimental.missing_sentinel import MISSING as _LINK_MISSING
+
+class EntityLinkState(_LinkStrEnum):
+    automatic = "automatic"
+    manual = "manual"
+    verified = "verified"
+
+class EntityLinkStateCounts(BaseModel):
+    automatic: int = Field(default=0, ge=0)
+    manual: int = Field(default=0, ge=0)
+    verified: int = Field(default=0, ge=0)
+    unassigned: int = Field(default=0, ge=0)
+    total: int = Field(default=0, ge=0)
+
+class EntityLinkStats(BaseModel):
+    faces: EntityLinkStateCounts = Field(default_factory=EntityLinkStateCounts)
+    mentions: EntityLinkStateCounts = Field(default_factory=EntityLinkStateCounts)
+
 
 class BodyGetTokenTokenLoginPost(BaseModel):
     """Body_get_token_token_login_post"""
@@ -123,6 +143,7 @@ class EntityListFilter(BaseModel):
     mention_id: Optional[list[UUID]] = Field(default=None, title="Mention Id", description="The mention identifiers associated with the entity.")
     has_mentions: Optional[bool] = Field(default=None, title="Has Mentions", description="Whether the entity has mentions.")
     has_detections: Optional[bool] = Field(default=None, title="Has Detections", description="Whether the entity has detections.")
+    entity_link_state: list[EntityLinkState] | _LINK_MISSING = _LINK_MISSING
 
 
 class EntityDeleteManyRequest(BaseModel):
@@ -150,6 +171,7 @@ class EntityResponse(BaseModel):
     wikidata_id: Optional[str] = Field(default=None, title="Wikidata Id", description="The Wikidata identifier for the entity.")
     nlcr_authority_id: Optional[str] = Field(default=None, title="Nlcr Authority Id", description="The NLCR authority identifier for the entity.")
     user_id: UUID = Field(..., title="User Id", description="The unique identifier of the user who created or owns the entity.")
+    entity_link_stats: EntityLinkStats = Field(default_factory=EntityLinkStats)
 
 
 class FaceKeypointType(str, Enum):
@@ -295,6 +317,9 @@ class FaceResponse(BaseModel):
     entity_id: Optional[UUID] = Field(default=None, title="Entity Id", description="The unique identifier of the entity associated with the face detection.")
     confidence: float = Field(..., title="Confidence", description="The confidence score of the face detection.")
     embeddings: Optional[list[str]] = Field(default=None, title="Embeddings", description="The embedding model identifiers available for the face detection. Embedding vectors are not returned.")
+    entity_link_state: EntityLinkState | None = None
+    entity_link_verified_by_user_id: UUID | None = None
+    entity_link_verified_at: datetime | None = None
 
 
 class FoundFace(BaseModel):
@@ -365,7 +390,8 @@ class FaceCreateRequest(BaseModel):
     confidence: Annotated[float, Field(ge=0, le=1)] = Field(..., title="Confidence", description="The confidence score of the face detection.")
     embeddings: Optional[list[ModelEmbeddingFaceModelStub]] = Field(default=None, title="Embeddings", description="The embeddings of the face detection.")
     source_id: UUID = Field(..., title="Source Id", description="The unique identifier of the source from which the face was detected. Mandatory.")
-    entity_id: Optional[UUID] = Field(default=None, title="Entity Id", description="The unique identifier of the entity associated with the face detection.")
+    entity_id: UUID | _LINK_MISSING = _LINK_MISSING
+    entity_link_state: EntityLinkState | _LINK_MISSING = _LINK_MISSING
 
 
 class FacePatchBatchItem(BaseModel):
@@ -374,9 +400,10 @@ class FacePatchBatchItem(BaseModel):
     Patch body for assigning a face, or unassigning it with a null entity ID in a batch.
     """
 
-    entity_id: Optional[UUID] = Field(default=None, title="Entity Id", description="The unique identifier of the entity associated with the face detection. If null, the face will be unassigned from any entity. If MISSING, the entity association will not be modified.")
-    embeddings: Optional[list[ModelEmbeddingFaceModelStub]] = Field(default=None, title="Embeddings", description="When provided, upsert each named model vector; unmentioned vectors remain unchanged. An empty list is a no-op.")
+    entity_id: UUID | None | _LINK_MISSING = _LINK_MISSING
+    embeddings: list[ModelEmbeddingFaceModelStub] | _LINK_MISSING = _LINK_MISSING
     detection_id: UUID = Field(..., title="Detection Id", description="The unique identifier of the face detection.")
+    entity_link_state: EntityLinkState | None | _LINK_MISSING = _LINK_MISSING
 
 
 class FacePatchRequest(BaseModel):
@@ -385,8 +412,9 @@ class FacePatchRequest(BaseModel):
     Patch body for assigning a face, or unassigning it with a null entity ID.
     """
 
-    entity_id: Optional[UUID] = Field(default=None, title="Entity Id", description="The unique identifier of the entity associated with the face detection. If null, the face will be unassigned from any entity. If MISSING, the entity association will not be modified.")
-    embeddings: Optional[list[ModelEmbeddingFaceModelStub]] = Field(default=None, title="Embeddings", description="When provided, upsert each named model vector; unmentioned vectors remain unchanged. An empty list is a no-op.")
+    entity_id: UUID | None | _LINK_MISSING = _LINK_MISSING
+    embeddings: list[ModelEmbeddingFaceModelStub] | _LINK_MISSING = _LINK_MISSING
+    entity_link_state: EntityLinkState | None | _LINK_MISSING = _LINK_MISSING
 
 
 class OpenIdConfigurationResponse(BaseModel):
@@ -477,7 +505,7 @@ class DocumentResponse(BaseModel):
     library: Annotated[str, Field(min_length=1)] = Field(..., title="Library")
     document_id: UUID = Field(..., title="Document Id")
     name: str | None = None
-
+    entity_link_stats: EntityLinkStats = Field(default_factory=EntityLinkStats)
 
 
 class FoundDocument(BaseModel):
@@ -578,6 +606,7 @@ class PageResponse(BaseModel):
     library: Annotated[str, Field(min_length=1)] = Field(..., title="Library")
     document_id: UUID = Field(..., title="Document Id")
     page_id: UUID = Field(..., title="Page Id")
+    entity_link_stats: EntityLinkStats = Field(default_factory=EntityLinkStats)
 
 
 class GenericListResponsePageResponse(BaseModel):
@@ -651,6 +680,7 @@ class TextMentionCreateRequest(BaseModel):
     context: Optional[str] = Field(default=None, title="Context", description="The context in which the entity name was found.")
     entity_id: UUID = Field(..., title="Entity Id", description="The ID of the entity being mentioned.")
     source_id: UUID = Field(..., title="Source Id", description="The ID of the source where the entity name was found.")
+    entity_link_state: EntityLinkState | _LINK_MISSING = _LINK_MISSING
 
 
 class TextMentionPatchBatchItem(BaseModel):
@@ -659,8 +689,9 @@ class TextMentionPatchBatchItem(BaseModel):
     Request body for assigning a mention to another entity in a batch.
     """
 
-    entity_id: Optional[UUID] = Field(default=None, title="Entity Id")
+    entity_id: UUID | None | _LINK_MISSING = _LINK_MISSING
     mention_id: UUID = Field(..., title="Mention Id")
+    entity_link_state: EntityLinkState | None | _LINK_MISSING = _LINK_MISSING
 
 
 class TextMentionPatchRequest(BaseModel):
@@ -669,7 +700,8 @@ class TextMentionPatchRequest(BaseModel):
     Assign a mention to an entity, or unassign it with null.
     """
 
-    entity_id: Optional[UUID] = Field(default=None, title="Entity Id")
+    entity_id: UUID | None | _LINK_MISSING = _LINK_MISSING
+    entity_link_state: EntityLinkState | None | _LINK_MISSING = _LINK_MISSING
 
 
 class TextMentionResponse(BaseModel):
@@ -683,6 +715,9 @@ class TextMentionResponse(BaseModel):
     context: Optional[str] = Field(default=None, title="Context")
     entity_id: Optional[UUID] = Field(default=None, title="Entity Id")
     source_id: UUID = Field(..., title="Source Id")
+    entity_link_state: EntityLinkState | None = None
+    entity_link_verified_by_user_id: UUID | None = None
+    entity_link_verified_at: datetime | None = None
 
 
 class TextMentionListResponse(BaseModel):
@@ -713,6 +748,9 @@ class TextMentionSpanModel(BaseModel):
     end_line_id: str = Field(..., title="End Line Id")
     start_character: Annotated[int, Field(ge=0)] = Field(..., title="Start Character")
     end_character: Annotated[int, Field(ge=0)] = Field(..., title="End Character")
+    entity_link_state: EntityLinkState | None = None
+    entity_link_verified_by_user_id: UUID | None = None
+    entity_link_verified_at: datetime | None = None
 
 
 class TokenResponse(BaseModel):
