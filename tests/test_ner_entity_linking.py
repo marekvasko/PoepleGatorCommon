@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from types import SimpleNamespace
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
+from botocore.exceptions import HTTPClientError
 
 import people_gator_common.pipelines.ner_entity_linking as entity_linking
 import people_gator_common.pipelines.ner_linking.journal as linking_journal
@@ -116,6 +118,95 @@ def _cluster() -> DisambiguatedNamedEntity:
         entity_indices=[1],
         entities=[entity],
     )
+
+
+def test_oversized_s3_journal_header_is_repaired_before_resume(monkeypatch) -> None:
+    log = '{"key":"existing-mutation"}\n'
+    saved = []
+    error = HTTPClientError(
+        error=ValueError("Got more than 8190 bytes when reading: b'aws-chunked'")
+    )
+
+    def unreadable(_path):
+        raise error
+
+    monkeypatch.setattr(linking_journal, "storage_exists", unreadable)
+    monkeypatch.setattr(
+        linking_journal, "_read_s3_log_without_aiohttp", lambda _path: log
+    )
+    monkeypatch.setattr(
+        linking_journal, "storage_write_text", lambda path, value: saved.append((path, value))
+    )
+
+    journal = linking_journal._MutationJournal("output")
+
+    assert journal.logged_keys == {"existing-mutation"}
+    assert saved == [("output/modifications.jsonl", log)]
+
+
+def test_s3_journal_recovery_reads_original_object(monkeypatch) -> None:
+    import botocore.session
+
+    calls = []
+
+    class FakeClient:
+        def get_object(self, **kwargs):
+            calls.append(kwargs)
+            return {"Body": io.BytesIO(b'{"key":"saved"}\n')}
+
+        def close(self):
+            calls.append("closed")
+
+    monkeypatch.setattr(
+        linking_journal,
+        "PeopleGatorSettings",
+        lambda: SimpleNamespace(
+            storage=SimpleNamespace(
+                s3=SimpleNamespace(
+                    enabled=True,
+                    bucket="bucket",
+                    endpoint_url="https://s3.example.test",
+                    access_key_id="key",
+                    secret_access_key="secret",
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        botocore.session,
+        "get_session",
+        lambda: SimpleNamespace(create_client=lambda *args, **kwargs: FakeClient()),
+    )
+
+    content = linking_journal._read_s3_log_without_aiohttp("output/modifications.jsonl")
+
+    assert content == '{"key":"saved"}\n'
+    assert calls == [
+        {"Bucket": "bucket", "Key": "output/modifications.jsonl"},
+        "closed",
+    ]
+
+
+def test_invalid_recovered_s3_journal_is_not_overwritten(monkeypatch) -> None:
+    error = HTTPClientError(
+        error=ValueError("Got more than 8190 bytes when reading: b'aws-chunked'")
+    )
+
+    def unreadable(_path):
+        raise error
+
+    monkeypatch.setattr(linking_journal, "storage_exists", unreadable)
+    monkeypatch.setattr(
+        linking_journal, "_read_s3_log_without_aiohttp", lambda _path: "invalid JSONL"
+    )
+    monkeypatch.setattr(
+        linking_journal,
+        "storage_write_text",
+        lambda *_args: pytest.fail("invalid journal must not be overwritten"),
+    )
+
+    with pytest.raises(ValueError):
+        linking_journal._MutationJournal("output")
 
 
 def test_cluster_is_exposed_as_deterministic_search_input() -> None:
@@ -832,14 +923,6 @@ def test_parallel_entities_revalidate_after_ordered_create(
         target.write_text(value)
 
     monkeypatch.setattr(linking_journal, "storage_write_text", write)
-    monkeypatch.setattr(
-        linking_journal,
-        "storage_ensure_parent_dir",
-        lambda path: (
-            __import__("pathlib").Path(path).parent.mkdir(parents=True, exist_ok=True)
-        ),
-    )
-    monkeypatch.setattr(linking_journal, "storage_open_file", open)
 
     def exists(path):
         return __import__("pathlib").Path(path).exists()
@@ -1135,12 +1218,6 @@ def test_incomplete_page_resumes_recorded_create_without_repeating_api_call(
     monkeypatch.setattr(
         linking_journal, "storage_read_text", lambda path: Path(path).read_text()
     )
-    monkeypatch.setattr(
-        linking_journal,
-        "storage_ensure_parent_dir",
-        lambda path: Path(path).parent.mkdir(parents=True, exist_ok=True),
-    )
-    monkeypatch.setattr(linking_journal, "storage_open_file", open)
 
     def write(path: str, value: str) -> None:
         target = Path(path)
@@ -1174,3 +1251,156 @@ def test_incomplete_page_resumes_recorded_create_without_repeating_api_call(
     assert (
         len((tmp_path / "output" / "modifications.jsonl").read_text().splitlines()) == 1
     )
+
+
+@pytest.mark.parametrize("mode", ["apply", "decision-only"])
+def test_restart_reuses_saved_decisions_with_missing_output_listing(
+    tmp_path, monkeypatch, mode
+):
+    from pathlib import Path
+    from people_gator_common.pipelines.llm_ner import PageInput
+    from people_gator_common.pipelines.ner_clusters import (
+        DisambiguationOutput,
+        PageNerClusters,
+    )
+
+    cluster = _cluster().model_copy(update={"entities": None})
+    source_path = tmp_path / "input/lib/doc/page.json"
+    output_prefix = str(tmp_path / "output")
+    output_path = Path(output_prefix) / "lib/doc/page.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        PageNerClusters(
+            library="lib",
+            document_id="doc",
+            page_id="page",
+            clusters=[
+                DisambiguationOutput(
+                    text="",
+                    prompt="",
+                    reasoning="",
+                    raw_output="",
+                    clusters=[cluster, cluster],
+                )
+            ],
+        ).model_dump_json()
+    )
+    monkeypatch.setattr(
+        linking_pipeline,
+        "_iter_cluster_pages",
+        lambda _: iter(
+            [
+                PageInput(
+                    library="lib",
+                    document_id="doc",
+                    page_id="page",
+                    path=str(source_path),
+                )
+            ]
+        ),
+    )
+    # Simulate a stale object-store listing across every restart.
+    monkeypatch.setattr(linking_pipeline, "storage_glob", lambda _: [])
+    for module in [linking_pipeline, linking_run, linking_journal]:
+        monkeypatch.setattr(module, "storage_read_text", lambda p: Path(p).read_text())
+    for module in [linking_run, linking_journal]:
+        monkeypatch.setattr(module, "storage_exists", lambda p: Path(p).exists())
+
+    def write(path, value):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(value)
+
+    monkeypatch.setattr(linking_journal, "storage_write_text", write)
+
+    searches = decisions = mutations = 0
+    fail = True
+
+    async def search(*args):
+        nonlocal searches
+        searches += 1
+        return []
+
+    async def decide(source, candidates, **kwargs):
+        nonlocal decisions
+        decisions += 1
+        return EntityLinkDecision(
+            action="create",
+            name=source.name,
+            aliases=[],
+            short_description="Popis.",
+            long_description="Popis.",
+        ), None
+
+    async def lookup(*args, **kwargs):
+        return "source-id"
+
+    async def apply(link, *, checkpoint, **kwargs):
+        nonlocal mutations
+        if fail and mutations == 1:
+            raise RuntimeError("interrupted")
+        mutations += 1
+        entity_id = f"entity-{mutations}"
+        link.selected_entity_id = entity_id
+        link.selected_entity_after = entity_linking.EntitySnapshot(
+            entity_id=entity_id, entity_type="person", name=link.source.name
+        )
+        link.mutations.append(
+            MutationAudit(
+                operation="create_entity",
+                resource_id=entity_id,
+                endpoint="/api/v1/entities",
+                after={"entity_id": entity_id},
+                applied_at=f"time-{mutations}",
+            )
+        )
+        await checkpoint()
+
+    monkeypatch.setattr(linking_run, "search_entity_candidates", search)
+    monkeypatch.setattr(linking_run, "llm_decide_entity_link_async", decide)
+    monkeypatch.setattr(linking_run, "lookup_page_source", lookup)
+    monkeypatch.setattr(linking_run, "apply_linked_entity_result", apply)
+
+    async def run():
+        async with httpx.AsyncClient() as client:
+            return await entity_linking.run_ner_entity_linking_pipeline(
+                config=EntityLinkingConfig(bearer_token="token"),
+                input_prefix=str(tmp_path / "input"),
+                output_prefix=output_prefix,
+                api_client=client,
+                llm_client=object(),
+                parallel_pages=1,
+                mode=mode,
+            )
+
+    if mode == "apply":
+        with pytest.raises(RuntimeError, match="interrupted"):
+            asyncio.run(run())
+    else:
+        # Interrupt after the second decision is checkpointed, before finalization.
+        def interrupt_write(path, value):
+            write(path, value)
+            if path == str(output_path):
+                saved = PageNerEntityLinks.model_validate_json(value)
+                if len(saved.links) == 2 and saved.completed_at is None:
+                    raise RuntimeError("interrupted")
+
+        monkeypatch.setattr(linking_journal, "storage_write_text", interrupt_write)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            asyncio.run(run())
+        monkeypatch.setattr(linking_journal, "storage_write_text", write)
+    prior = PageNerEntityLinks.model_validate_json(output_path.read_text())
+    assert len(prior.links) == 2
+    assert prior.completed_at is None
+    assert decisions == searches == 2
+    fail = False
+    summary = asyncio.run(run())
+    assert summary.processed_pages == 1
+    assert decisions == searches == 2
+    assert mutations == (2 if mode == "apply" else 0)
+    completed = PageNerEntityLinks.model_validate_json(output_path.read_text())
+    assert completed.completed_at is not None
+    assert completed.started_at == prior.started_at
+    again = asyncio.run(run())
+    assert again.skipped_pages == 1
+    assert again.processed_pages == 0
+    assert decisions == searches == 2

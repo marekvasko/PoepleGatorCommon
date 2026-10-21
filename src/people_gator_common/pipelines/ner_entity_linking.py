@@ -11,6 +11,8 @@ from .ner_linking.api import (
 from .ner_linking.llm import llm_decide_entity_link, llm_decide_entity_link_async
 from .ner_linking.models import (
     DEFAULT_API_BASE_URL,
+    DEFAULT_DOCUMENT_INPUT_PREFIX,
+    DEFAULT_DOCUMENT_OUTPUT_PREFIX,
     DEFAULT_INPUT_PREFIX,
     DEFAULT_OUTPUT_PREFIX,
     DEFAULT_PROGRESS_INTERVAL_SECONDS,
@@ -43,6 +45,8 @@ from .ner_linking.source import build_search_queries, source_entity_from_cluster
 
 __all__ = [
     "DEFAULT_API_BASE_URL",
+    "DEFAULT_DOCUMENT_INPUT_PREFIX",
+    "DEFAULT_DOCUMENT_OUTPUT_PREFIX",
     "DEFAULT_INPUT_PREFIX",
     "DEFAULT_OUTPUT_PREFIX",
     "DEFAULT_PROGRESS_INTERVAL_SECONDS",

@@ -1,19 +1,13 @@
-"""Reusable entity clustering and LLM disambiguation over document NER output.
+"""Cluster NER records by page or document and save one dump per scope unit.
 
-This module is deliberately free of filesystem, library, and page concerns.
-It consumes the generic :class:`DocumentNerBase` hierarchy produced by
-:mod:`people_gator_common.pipelines.llm_ner` (or anything structurally
-compatible) and provides two composable operations:
-
-1. :func:`cluster_document_entities` — group entities that share names or
-   name variants into :class:`NamedEntityCluster` records.
-2. :func:`disambiguate_ner` — verify or split one cluster with an LLM and
-   return the resulting list of clusters.
+The generic clustering functions operate on extracted entities. The storage
+adapter adds deterministic cluster/record identities and exact page provenance.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+import hashlib
 import json
 import logging
 import os
@@ -21,10 +15,11 @@ import posixpath
 import re
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import numpy as np
 from openrouter import OpenRouter
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 import rapidfuzz
 from sklearn.cluster import DBSCAN
 
@@ -35,6 +30,7 @@ from people_gator_common.filesystem import (
 )
 from people_gator_common.pipelines.llm_ner import (
     ChunkNerBase,
+    ChunkNerLLM,
     DocumentNerBase,
     LLMBase,
     NamedEntity,
@@ -50,9 +46,11 @@ DEFAULT_MODEL = "z-ai/glm-5.3-flash"
 DEFAULT_CLUSTER_THRESHOLD = 92.0
 DEFAULT_INPUT_PREFIX = "page-named-entities"
 DEFAULT_OUTPUT_PREFIX = "page-named-entities-clusters"
+DEFAULT_DOCUMENT_OUTPUT_PREFIX = "document-named-entities-clusters"
 DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 
 DEFAULT_NAME_WEIGHT = 0.7
+CLUSTER_ID_NAMESPACE = uuid5(NAMESPACE_URL, "people-gator/ner-clusters/v1")
 DEFAULT_MENTION_WEIGHT = 0.3
 
 T = TypeVar("T", bound=ChunkNerBase)
@@ -63,6 +61,8 @@ class NerClustersRunSummary:
     processed_pages: int
     skipped_pages: int
     clusters: int
+    processed_documents: int = 0
+    skipped_documents: int = 0
 
 
 DISAMBIGUATION_PROMPT = """\
@@ -143,6 +143,7 @@ class DisambiguatedNamedEntity(BaseModel):
     long_description: str = ""
     entity_indices: list[int]
     entities: list[NamedEntity] | None = None
+    cluster_id: UUID | None = None
 
     @classmethod
     def from_named_entity(
@@ -172,12 +173,120 @@ class DisambiguationResult(BaseModel):
 
 
 class PageNerClusters(BaseModel):
-    """Clustered and disambiguated entities for one PeopleGator page."""
+    """Legacy page representation used by the entity-linking adapter."""
 
     library: str
     document_id: str
     page_id: str
     clusters: list[DisambiguationOutput]
+    scope: Literal["page", "document"] = "page"
+    document_fingerprint: str | None = None
+    document_run_id: UUID | None = None
+
+
+class ClusterInputPage(BaseModel):
+    page_id: str
+    path: str
+
+
+class ClusterMember(BaseModel):
+    """One extracted entity record and its zero-based position in page NER."""
+
+    record_id: UUID
+    page_id: str
+    chunk_id: UUID
+    chunk_index: int = Field(ge=0)
+    entity_index: int = Field(ge=0)
+    entity: NamedEntity
+
+
+class ResolvedEntityCluster(BaseModel):
+    cluster_id: UUID
+    name: str
+    short_description: str
+    long_description: str
+    members: list[ClusterMember] = Field(min_length=1)
+    disambiguation_index: int = Field(ge=0)
+    entity_indices: list[int]
+
+
+class NerClustersDump(BaseModel):
+    """One self-contained cluster dump for one page or one entire document."""
+
+    schema_version: Literal[1] = 1
+    scope: Literal["page", "document"]
+    library: str
+    document_id: str
+    page_id: str | None = None
+    inputs: list[ClusterInputPage] = Field(min_length=1)
+    input_fingerprint: str
+    run_id: UUID
+    clusters: list[ResolvedEntityCluster]
+    disambiguations: list[LLMBase]
+
+    @model_validator(mode="after")
+    def _validate_membership(self) -> NerClustersDump:
+        page_ids = {page.page_id for page in self.inputs}
+        if len(page_ids) != len(self.inputs):
+            raise ValueError("input pages must be unique")
+        if self.scope == "page":
+            if self.page_id is None or page_ids != {self.page_id}:
+                raise ValueError("page scope must contain exactly its named page")
+        elif self.page_id is not None:
+            raise ValueError("document scope must not identify a single page")
+        cluster_ids: set[UUID] = set()
+        record_ids: set[UUID] = set()
+        for cluster in self.clusters:
+            if cluster.cluster_id in cluster_ids:
+                raise ValueError("cluster IDs must be unique")
+            cluster_ids.add(cluster.cluster_id)
+            if cluster.disambiguation_index >= len(self.disambiguations):
+                raise ValueError("cluster references a missing disambiguation")
+            if len(cluster.entity_indices) != len(cluster.members):
+                raise ValueError("each member must retain its disambiguation index")
+            for member in cluster.members:
+                if member.page_id not in page_ids:
+                    raise ValueError("cluster member references an unknown page")
+                if member.record_id in record_ids:
+                    raise ValueError(
+                        "an entity record must belong to exactly one cluster"
+                    )
+                record_ids.add(member.record_id)
+        return self
+
+
+def load_page_ner_clusters(content: str) -> PageNerClusters:
+    """Read a page dump or legacy output for the existing page linker."""
+    payload = json.loads(content)
+    if not isinstance(payload, dict) or "schema_version" not in payload:
+        return PageNerClusters.model_validate(payload)
+    dump = NerClustersDump.model_validate(payload)
+    if dump.scope != "page":
+        raise ValueError("the page linker requires a page-scoped cluster dump")
+    assert dump.page_id is not None
+    return PageNerClusters(
+        library=dump.library,
+        document_id=dump.document_id,
+        page_id=dump.page_id,
+        clusters=[
+            DisambiguationOutput(
+                **llm.model_dump(),
+                clusters=[
+                    DisambiguatedNamedEntity(
+                        cluster_id=cluster.cluster_id,
+                        name=cluster.name,
+                        short_description=cluster.short_description,
+                        long_description=cluster.long_description,
+                        entity_indices=cluster.entity_indices,
+                        entities=[member.entity for member in cluster.members],
+                    )
+                    for cluster in dump.clusters
+                    if cluster.disambiguation_index == index
+                ],
+            )
+            for index, llm in enumerate(dump.disambiguations)
+        ],
+    )
 
 
 def _escape_unescaped_string_quotes(candidate: str) -> str:
@@ -579,6 +688,11 @@ def document_entities_clustering_pipeline(
         for mention in entity.mentions:
             mention.chunk_id = chunk_id
     entities = [entity for _, entity in indexed_entities]
+    logger.info(
+        "Clustering %d entity records from %d NER chunks",
+        len(entities),
+        len(document_ner.chunks),
+    )
     entity_clusters = cluster_entities(
         entities,
         threshold=threshold,
@@ -586,15 +700,30 @@ def document_entities_clustering_pipeline(
         mention_weight=mention_weight,
         name_weight=name_weight,
     )
-    disambiguated_entities = [
-        llm_disambiguate_entities(
-            entities,
+    logger.info("Fuzzy clustering produced %d candidate groups", len(entity_clusters))
+    disambiguated_entities = []
+    for index, group in enumerate(entity_clusters, start=1):
+        logger.info(
+            "Disambiguating group %d/%d: %s (%d entity records%s)",
+            index,
+            len(entity_clusters),
+            group[0].name,
+            len(group),
+            "; singleton, no LLM call" if len(group) == 1 else f"; model={model}",
+        )
+        result = llm_disambiguate_entities(
+            group,
             client=client,
             model=model,
             reasoning_effort=reasoning_effort,
         )
-        for entities in entity_clusters
-    ]
+        logger.info(
+            "Resolved group %d/%d into %d clusters",
+            index,
+            len(entity_clusters),
+            len(result[0]),
+        )
+        disambiguated_entities.append(result)
     return [
         DisambiguationOutput(
             text="",
@@ -620,6 +749,7 @@ def _iter_ner_pages(input_prefix: str) -> Iterator[PageInput]:
     """
     input_prefix = posixpath.normpath(input_prefix)
     pattern = posixpath.join(input_prefix, "*", "*", "*.json")
+    logger.info("Listing NER page inputs using %s", pattern)
     page_paths = sorted(storage_glob(pattern))
     if not page_paths:
         raise ValueError(
@@ -643,11 +773,100 @@ def _iter_ner_pages(input_prefix: str) -> Iterator[PageInput]:
         )
 
 
+def _cluster_output_path(output_prefix: str, scope: str, page: PageInput) -> str:
+    if scope == "document":
+        return posixpath.join(output_prefix, page.library, f"{page.document_id}.json")
+    return posixpath.join(
+        output_prefix, page.library, page.document_id, f"{page.page_id}.json"
+    )
+
+
+def _source_members(pages: list[PageNer]) -> dict[int, ClusterMember]:
+    members: dict[int, ClusterMember] = {}
+    for page in pages:
+        for chunk_index, chunk in enumerate(page.chunks):
+            assert chunk.chunk_id is not None
+            for entity_index, entity in enumerate(chunk.valid_entities):
+                identity = [
+                    "record",
+                    page.library,
+                    page.document_id,
+                    page.page_id,
+                    str(chunk.chunk_id),
+                    chunk_index,
+                    entity_index,
+                ]
+                members[id(entity)] = ClusterMember(
+                    record_id=uuid5(CLUSTER_ID_NAMESPACE, json.dumps(identity)),
+                    page_id=page.page_id,
+                    chunk_id=chunk.chunk_id,
+                    chunk_index=chunk_index,
+                    entity_index=entity_index,
+                    entity=entity,
+                )
+    return members
+
+
+def _build_cluster_dump(
+    *,
+    scope: Literal["page", "document"],
+    inputs: list[PageInput],
+    pages: list[PageNer],
+    fingerprint: str,
+    groups: list[DisambiguationOutput],
+) -> NerClustersDump:
+    sources = _source_members(pages)
+    clusters: list[ResolvedEntityCluster] = []
+    first = pages[0]
+    page_id = first.page_id if scope == "page" else None
+    for group_index, group in enumerate(groups):
+        for cluster in group.clusters:
+            members = [sources[id(entity)] for entity in cluster.entities or []]
+            identity = [
+                "cluster",
+                scope,
+                first.library,
+                first.document_id,
+                page_id,
+                sorted(str(member.record_id) for member in members),
+            ]
+            clusters.append(
+                ResolvedEntityCluster(
+                    cluster_id=uuid5(CLUSTER_ID_NAMESPACE, json.dumps(identity)),
+                    name=cluster.name,
+                    short_description=cluster.short_description,
+                    long_description=cluster.long_description,
+                    members=members,
+                    disambiguation_index=group_index,
+                    entity_indices=cluster.entity_indices,
+                )
+            )
+    if {member.record_id for member in sources.values()} != {
+        member.record_id for cluster in clusters for member in cluster.members
+    }:
+        raise RuntimeError("Resolved clusters do not cover all source entity records")
+    return NerClustersDump(
+        scope=scope,
+        library=first.library,
+        document_id=first.document_id,
+        page_id=page_id,
+        inputs=[
+            ClusterInputPage(page_id=page.page_id, path=page.path) for page in inputs
+        ],
+        input_fingerprint=fingerprint,
+        run_id=uuid4(),
+        clusters=clusters,
+        disambiguations=[
+            LLMBase(**group.model_dump(exclude={"clusters"})) for group in groups
+        ],
+    )
+
+
 def _run_with_client(
     *,
     input_prefix: str,
     output_prefix: str,
-    client: Any,  # openrouter client: third-party package without type stubs
+    client: Any,
     model: str,
     reasoning_effort: ReasoningEffort,
     threshold: float,
@@ -656,52 +875,125 @@ def _run_with_client(
     force: bool,
     max_pages: int | None,
     progress_interval_seconds: float,
+    scope: Literal["page", "document"],
+    max_documents: int | None,
 ) -> NerClustersRunSummary:
-    processed_pages = 0
-    skipped_pages = 0
-    total_clusters = 0
     page_inputs = list(_iter_ner_pages(input_prefix))
-
-    existing_outputs: set[str] = set()
-    if not force:
-        output_pattern = posixpath.join(output_prefix, "*", "*", "*.json")
-        existing_outputs = set(storage_glob(output_pattern))
-
+    units: dict[tuple[str, str, str | None], list[PageInput]] = {}
+    for page in page_inputs:
+        key = (
+            page.library,
+            page.document_id,
+            page.page_id if scope == "page" else None,
+        )
+        units.setdefault(key, []).append(page)
     logger.info(
-        "Found %d NER pages and %d existing cluster outputs",
+        "Found %d NER page files below %s; selected %s scope (%d %ss), output prefix %s",
         len(page_inputs),
-        len(existing_outputs),
+        input_prefix,
+        scope,
+        len(units),
+        scope,
+        output_prefix,
     )
-
-    for page_input in log_progress(
-        page_inputs,
+    processed_pages = skipped_pages = total_clusters = 0
+    processed_units = skipped_units = 0
+    maximum = max_documents if scope == "document" else max_pages
+    settings = {
+        "schema_version": 1,
+        "scope": scope,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "threshold": threshold,
+        "mention_weight": mention_weight,
+        "name_weight": name_weight,
+    }
+    for identity, inputs in log_progress(
+        units.items(),
         logger=logger,
-        description="NER clustering",
-        unit="pages",
+        description=f"NER {scope} clustering",
+        unit=f"{scope}s",
         min_interval_seconds=progress_interval_seconds,
     ):
-        if max_pages is not None and processed_pages >= max_pages:
+        if maximum is not None and processed_units >= maximum:
             break
-        output_path = posixpath.join(
-            output_prefix,
-            page_input.library,
-            page_input.document_id,
-            f"{page_input.page_id}.json",
-        )
-        if output_path in existing_outputs:
-            skipped_pages += 1
-            logger.debug("Skipping existing cluster output %s", output_path)
-            continue
-
+        label = "/".join(part for part in identity if part is not None)
+        output_path = _cluster_output_path(output_prefix, scope, inputs[0])
+        logger.info("Loading %s %s (%d input pages)", scope, label, len(inputs))
+        pages: list[PageNer] = []
+        digest = hashlib.sha256(json.dumps(settings, sort_keys=True).encode())
+        for index, page_input in enumerate(inputs, start=1):
+            logger.info(
+                "Loading page %d/%d from %s", index, len(inputs), page_input.path
+            )
+            content = storage_read_text(page_input.path)
+            digest.update(json.dumps([page_input.path, content]).encode())
+            page = PageNer.model_validate_json(content)
+            if (page.library, page.document_id, page.page_id) != (
+                page_input.library,
+                page_input.document_id,
+                page_input.page_id,
+            ):
+                raise ValueError(
+                    f"Input identity does not match path: {page_input.path}"
+                )
+            logger.info(
+                "Loaded page %s: %d chunks, %d entity records",
+                page.page_id,
+                len(page.chunks),
+                sum(len(chunk.valid_entities) for chunk in page.chunks),
+            )
+            pages.append(page)
+        fingerprint = digest.hexdigest()
+        if not force:
+            logger.info("Checking existing cluster dump %s", output_path)
+            try:
+                previous = NerClustersDump.model_validate_json(
+                    storage_read_text(output_path)
+                )
+            except FileNotFoundError:
+                logger.info("No existing cluster dump; processing %s %s", scope, label)
+            except ValidationError:
+                logger.warning(
+                    "Regenerating incomplete or legacy cluster dump %s", output_path
+                )
+            else:
+                if (
+                    previous.scope,
+                    previous.library,
+                    previous.document_id,
+                    previous.page_id,
+                ) != (scope, *identity):
+                    raise ValueError(
+                        f"Output identity does not match path: {output_path}"
+                    )
+                if previous.input_fingerprint == fingerprint:
+                    skipped_units += 1
+                    skipped_pages += len(pages)
+                    logger.info(
+                        "Skipping unchanged %s %s (%s)", scope, label, output_path
+                    )
+                    continue
+                logger.info(
+                    "Inputs or settings changed; rebuilding %s %s", scope, label
+                )
         logger.info(
-            "Processing %s/%s/%s",
-            page_input.library,
-            page_input.document_id,
-            page_input.page_id,
+            "Processing %s %s: %d pages, %d chunks, %d entity records",
+            scope,
+            label,
+            len(pages),
+            sum(len(page.chunks) for page in pages),
+            sum(len(chunk.valid_entities) for page in pages for chunk in page.chunks),
         )
-        page_ner = PageNer.model_validate_json(storage_read_text(page_input.path))
-        clusters = document_entities_clustering_pipeline(
-            page_ner,
+        document = DocumentNerBase[ChunkNerLLM](
+            text="\n\n".join(page.text for page in pages),
+            chunks=[chunk for page in pages for chunk in page.chunks],
+            chunk_metadata=[
+                metadata for page in pages for metadata in page.chunk_metadata
+            ],
+        )
+        groups = document_entities_clustering_pipeline(
+            document,
             client=client,
             model=model,
             reasoning_effort=reasoning_effort,
@@ -709,27 +1001,34 @@ def _run_with_client(
             mention_weight=mention_weight,
             name_weight=name_weight,
         )
-        output = PageNerClusters(
-            library=page_input.library,
-            document_id=page_input.document_id,
-            page_id=page_input.page_id,
-            clusters=clusters,
+        output = _build_cluster_dump(
+            scope=scope,
+            inputs=inputs,
+            pages=pages,
+            fingerprint=fingerprint,
+            groups=groups,
+        )
+        logger.info(
+            "Saving %d resolved clusters to %s", len(output.clusters), output_path
         )
         storage_write_text(output_path, output.model_dump_json(indent=2))
-        processed_pages += 1
-        total_clusters += len(clusters)
-
+        logger.info("Saved %s cluster dump %s", scope, output_path)
+        processed_units += 1
+        processed_pages += len(pages)
+        total_clusters += len(output.clusters)
     return NerClustersRunSummary(
         processed_pages=processed_pages,
         skipped_pages=skipped_pages,
         clusters=total_clusters,
+        processed_documents=processed_units if scope == "document" else 0,
+        skipped_documents=skipped_units if scope == "document" else 0,
     )
 
 
 def run_ner_clusters_pipeline(
     *,
     input_prefix: str | os.PathLike[str] = DEFAULT_INPUT_PREFIX,
-    output_prefix: str | os.PathLike[str] = DEFAULT_OUTPUT_PREFIX,
+    output_prefix: str | os.PathLike[str] | None = None,
     model: str = DEFAULT_MODEL,
     reasoning_effort: ReasoningEffort = "low",
     threshold: float = DEFAULT_CLUSTER_THRESHOLD,
@@ -737,25 +1036,43 @@ def run_ner_clusters_pipeline(
     name_weight: float = DEFAULT_NAME_WEIGHT,
     force: bool = False,
     max_pages: int | None = None,
+    scope: Literal["page", "document"] = "page",
+    max_documents: int | None = None,
     progress_interval_seconds: float = DEFAULT_PROGRESS_INTERVAL_SECONDS,
     api_key: str | None = None,
     client: Any | None = None,  # openrouter client: no type stubs
 ) -> NerClustersRunSummary:
-    """Cluster and disambiguate saved LLM NER page outputs.
+    """Cluster and disambiguate saved LLM NER outputs by page or document.
 
     Reads page NER JSON written by
-    :func:`people_gator_common.pipelines.llm_ner.run_llm_ner_pipeline`,
-    clusters each page's entities, disambiguates the clusters with an LLM, and
-    writes one cluster JSON per page below ``output_prefix``. Existing outputs
-    are skipped unless ``force`` is true. When ``client`` is omitted, an
+    :func:`people_gator_common.pipelines.llm_ner.run_llm_ner_pipeline`.
+    Each scope unit produces exactly one dump with stable cluster IDs, original
+    member records, page/chunk provenance and LLM audit data. Document scope pools
+    all available pages per library/document into one file. Page scope writes one
+    file per page. Unchanged complete dumps are skipped; stale or partial dumps
+    are regenerated. When ``client`` is omitted, an
     OpenRouter client is made using ``api_key`` or ``OPENROUTER_API_KEY``.
     """
     input_prefix = posixpath.normpath(os.fspath(input_prefix))
+    if scope not in ("page", "document"):
+        raise ValueError("scope must be 'page' or 'document'")
+    if output_prefix is None:
+        output_prefix = (
+            DEFAULT_DOCUMENT_OUTPUT_PREFIX
+            if scope == "document"
+            else DEFAULT_OUTPUT_PREFIX
+        )
     output_prefix = posixpath.normpath(os.fspath(output_prefix))
     if not 0 <= threshold <= 100:
         raise ValueError("threshold must be between 0 and 100")
     if max_pages is not None and max_pages <= 0:
         raise ValueError("max_pages must be positive when provided")
+    if max_documents is not None and max_documents <= 0:
+        raise ValueError("max_documents must be positive when provided")
+    if scope == "document" and max_pages is not None:
+        raise ValueError("max_pages is only supported in page scope; use max_documents")
+    if scope == "page" and max_documents is not None:
+        raise ValueError("max_documents is only supported in document scope")
     if progress_interval_seconds < 0:
         raise ValueError("progress_interval_seconds must be non-negative")
 
@@ -769,6 +1086,8 @@ def run_ner_clusters_pipeline(
         "name_weight": name_weight,
         "force": force,
         "max_pages": max_pages,
+        "scope": scope,
+        "max_documents": max_documents,
         "progress_interval_seconds": progress_interval_seconds,
     }
     if client is not None:
@@ -783,20 +1102,26 @@ def run_ner_clusters_pipeline(
 
 __all__ = [
     "DEFAULT_CLUSTER_THRESHOLD",
+    "DEFAULT_DOCUMENT_OUTPUT_PREFIX",
     "DEFAULT_INPUT_PREFIX",
     "DEFAULT_MENTION_WEIGHT",
     "DEFAULT_MODEL",
     "DEFAULT_NAME_WEIGHT",
     "DEFAULT_OUTPUT_PREFIX",
     "DEFAULT_PROGRESS_INTERVAL_SECONDS",
+    "ClusterInputPage",
+    "ClusterMember",
     "DisambiguatedNamedEntity",
     "DisambiguationOutput",
     "DisambiguationResult",
     "NamedEntityShort",
     "NerClustersRunSummary",
+    "NerClustersDump",
     "PageNerClusters",
+    "ResolvedEntityCluster",
     "cluster_entities",
     "llm_disambiguate_entities",
+    "load_page_ner_clusters",
     "fuzzy_score_form_aliases",
     "parse_json_object",
     "document_entities_clustering_pipeline",

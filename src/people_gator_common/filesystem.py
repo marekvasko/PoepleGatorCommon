@@ -41,6 +41,10 @@ def _setup_filesystem() -> AbstractFileSystem:
             key=storage.s3.access_key_id,
             secret=storage.s3.secret_access_key,
             endpoint_url=storage.s3.endpoint_url,
+            # Optional checksum trailers add aws-chunked to Content-Encoding.
+            # Some S3-compatible stores persist that transport encoding as
+            # object metadata, which can grow on subsequent writes.
+            config_kwargs={"request_checksum_calculation": "when_required"},
         )
         prefix = storage.s3.bucket
         return fs

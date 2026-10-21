@@ -9,6 +9,7 @@ import dotenv
 from people_gator_common.cli.helpers import configure_logging
 from people_gator_common.pipelines.ner_clusters import (
     DEFAULT_CLUSTER_THRESHOLD,
+    DEFAULT_DOCUMENT_OUTPUT_PREFIX,
     DEFAULT_INPUT_PREFIX,
     DEFAULT_MENTION_WEIGHT,
     DEFAULT_MODEL,
@@ -45,8 +46,22 @@ def parse_args() -> argparse.Namespace:
         "--output-prefix",
         "--output-dir",
         dest="output_prefix",
-        default=DEFAULT_OUTPUT_PREFIX,
-        help="Storage-relative output prefix for per-page cluster JSON (default: %(default)s).",
+        default=None,
+        help=(
+            "Storage-relative output prefix for one dump per selected scope unit "
+            f"(default: {DEFAULT_OUTPUT_PREFIX} for page scope, "
+            f"{DEFAULT_DOCUMENT_OUTPUT_PREFIX} for document scope)."
+        ),
+    )
+    parser.add_argument(
+        "--scope",
+        choices=["page", "document"],
+        default="page",
+        help=(
+            "Cluster within each page or across all available pages of each "
+            "library/document. Write one dump per page or document with member "
+            "page/chunk references (default: %(default)s)."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -88,7 +103,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-pages",
         type=int,
-        help="Process at most this many new pages (useful for smoke tests).",
+        help="Process at most this many new pages (page scope only).",
+    )
+    parser.add_argument(
+        "--max-documents",
+        type=int,
+        help="Process at most this many documents, including all their pages (document scope only).",
     )
     parser.add_argument(
         "--progress-interval",
@@ -99,14 +119,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Reprocess pages whose output files already exist.",
+        help="Regenerate existing cluster dumps even when inputs are unchanged.",
     )
     parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.scope == "document" and args.max_pages is not None:
+        parser.error("--max-pages requires --scope page; use --max-documents")
+    if args.scope == "page" and args.max_documents is not None:
+        parser.error("--max-documents requires --scope document")
+    if args.max_pages is not None and args.max_pages <= 0:
+        parser.error("--max-pages must be positive")
+    if args.max_documents is not None and args.max_documents <= 0:
+        parser.error("--max-documents must be positive")
+    return args
 
 
 def main() -> int:
@@ -122,12 +151,22 @@ def main() -> int:
         name_weight=args.name_weight,
         force=args.force,
         max_pages=args.max_pages,
+        scope=args.scope,
+        max_documents=args.max_documents,
         progress_interval_seconds=args.progress_interval,
     )
-    print(
-        f"NER clustering complete: {summary.processed_pages} processed, "
-        f"{summary.skipped_pages} skipped, {summary.clusters} clusters"
-    )
+    if args.scope == "document":
+        print(
+            f"NER clustering complete: {summary.processed_documents} documents processed, "
+            f"{summary.skipped_documents} documents skipped; "
+            f"{summary.processed_pages} pages processed, {summary.skipped_pages} pages skipped; "
+            f"{summary.clusters} document clusters"
+        )
+    else:
+        print(
+            f"NER clustering complete: {summary.processed_pages} processed, "
+            f"{summary.skipped_pages} skipped, {summary.clusters} clusters"
+        )
     return 0
 
 

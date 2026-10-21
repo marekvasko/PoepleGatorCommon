@@ -13,6 +13,8 @@ from people_gator_common.cli.helpers import configure_logging
 from people_gator_common.pipelines.ner_clusters import DEFAULT_MODEL
 from people_gator_common.pipelines.ner_entity_linking import (
     DEFAULT_API_BASE_URL,
+    DEFAULT_DOCUMENT_INPUT_PREFIX,
+    DEFAULT_DOCUMENT_OUTPUT_PREFIX,
     DEFAULT_INPUT_PREFIX,
     DEFAULT_OUTPUT_PREFIX,
     DEFAULT_PROGRESS_INTERVAL_SECONDS,
@@ -38,16 +40,28 @@ def parse_args() -> argparse.Namespace:
         "--input-prefix",
         "--input-dir",
         dest="input_prefix",
-        default=DEFAULT_INPUT_PREFIX,
-        help="Storage prefix containing per-page NER cluster JSON (default: %(default)s).",
+        default=None,
+        help=(
+            f"Cluster dump input prefix (default: {DEFAULT_INPUT_PREFIX} for page scope, "
+            f"{DEFAULT_DOCUMENT_INPUT_PREFIX} for document scope)."
+        ),
     )
     parser.add_argument(
         "-o",
         "--output-prefix",
         "--output-dir",
         dest="output_prefix",
-        default=DEFAULT_OUTPUT_PREFIX,
-        help="Storage prefix for per-page entity-link JSON (default: %(default)s).",
+        default=None,
+        help=(
+            f"Link journal output prefix (default: {DEFAULT_OUTPUT_PREFIX} for page scope, "
+            f"{DEFAULT_DOCUMENT_OUTPUT_PREFIX} for document scope)."
+        ),
+    )
+    parser.add_argument(
+        "--scope",
+        choices=["page", "document"],
+        default="page",
+        help="Read one cluster dump and save one link journal per page or document (default: %(default)s).",
     )
     parser.add_argument(
         "--api-base-url",
@@ -58,6 +72,11 @@ def parse_args() -> argparse.Namespace:
         "--bearer-token",
         default=os.getenv("PEOPLE_GATOR_API_BEARER_TOKEN"),
         help="Existing People Gator bearer token.",
+    )
+    parser.add_argument(
+        "--refresh-token",
+        default=os.getenv("PEOPLE_GATOR_API_REFRESH_TOKEN"),
+        help="Refresh token paired with the supplied bearer token.",
     )
     parser.add_argument(
         "--username",
@@ -83,7 +102,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-pages",
         type=int,
-        help="Process at most this many new pages.",
+        help="Process at most this many new pages (page scope only).",
+    )
+    parser.add_argument(
+        "--max-documents",
+        type=int,
+        help="Process at most this many documents, including every member page (document scope only).",
     )
     parser.add_argument(
         "--parallel-entities",
@@ -113,7 +137,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Reprocess pages whose entity-link output already exists.",
+        help="Reprocess existing page/document journals; live mutation journals must be rolled back first.",
     )
     parser.add_argument(
         "--decision-only",
@@ -123,7 +147,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rollback-latest",
         action="store_true",
-        help="Reverse the latest journaled page instead of processing inputs.",
+        help="Reverse the latest page/document journal instead of processing inputs.",
     )
     parser.add_argument(
         "--force-rollback",
@@ -135,13 +159,23 @@ def parse_args() -> argparse.Namespace:
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.scope == "document" and args.max_pages is not None:
+        parser.error("--max-pages requires --scope page; use --max-documents")
+    if args.scope == "page" and args.max_documents is not None:
+        parser.error("--max-documents requires --scope document")
+    if args.max_pages is not None and args.max_pages <= 0:
+        parser.error("--max-pages must be positive")
+    if args.max_documents is not None and args.max_documents <= 0:
+        parser.error("--max-documents must be positive")
+    return args
 
 
 async def _run(args: argparse.Namespace) -> int:
     config = EntityLinkingConfig(
         base_url=args.api_base_url,
         bearer_token=args.bearer_token,
+        refresh_token=args.refresh_token,
         username=args.username,
         password=args.password,
         timeout_seconds=args.request_timeout_seconds,
@@ -149,7 +183,12 @@ async def _run(args: argparse.Namespace) -> int:
     if args.rollback_latest:
         result = await rollback_latest_entity_linking_run(
             config=config,
-            output_prefix=args.output_prefix,
+            output_prefix=args.output_prefix
+            or (
+                DEFAULT_DOCUMENT_OUTPUT_PREFIX
+                if args.scope == "document"
+                else DEFAULT_OUTPUT_PREFIX
+            ),
             force=args.force_rollback,
         )
         print(
@@ -166,12 +205,19 @@ async def _run(args: argparse.Namespace) -> int:
         reasoning_effort=args.reasoning_effort,
         force=args.force,
         max_pages=args.max_pages,
+        scope=args.scope,
+        max_documents=args.max_documents,
         progress_interval_seconds=args.progress_interval,
         mode="decision-only" if args.decision_only else "apply",
         parallel_pages=args.parallel_pages,
     )
+    documents = (
+        f"{summary.processed_documents} documents processed, {summary.skipped_documents} documents skipped; "
+        if args.scope == "document"
+        else ""
+    )
     print(
-        f"NER entity linking complete: {summary.processed_pages} processed, "
+        f"NER entity linking complete: {documents}{summary.processed_pages} pages processed, "
         f"{summary.skipped_pages} skipped; {summary.merge_decisions} merge and "
         f"{summary.create_decisions} create decisions saved for "
         f"{summary.source_entities} source entities; "

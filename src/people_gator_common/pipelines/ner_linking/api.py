@@ -86,7 +86,43 @@ def _mention_payloads(
     return output
 
 
-def _link_application_complete(link: LinkedEntityResult, *, source_id: str) -> bool:
+def _linked_mention_payloads(
+    link: LinkedEntityResult,
+    *,
+    source_id: str | None,
+    page_source_ids: dict[str, str] | None,
+) -> list[dict[str, Any]]:
+    assert link.selected_entity_id is not None
+    if page_source_ids is None:
+        if source_id is None:
+            raise ValueError("page mentions require a page source ID")
+        return _mention_payloads(
+            link.source_cluster, entity_id=link.selected_entity_id, source_id=source_id
+        )
+    if not link.members:
+        raise ValueError("document mentions require member page provenance")
+    payloads = []
+    seen: set[tuple[str, str, str]] = set()
+    for member in link.members:
+        member_source = page_source_ids[member.page_id]
+        cluster = link.source_cluster.model_copy(update={"entities": [member.entity]})
+        for payload in _mention_payloads(
+            cluster, entity_id=link.selected_entity_id, source_id=member_source
+        ):
+            # Equal text on different pages is distinct evidence.
+            key = (payload["source_id"], payload["name"], payload["context"] or "")
+            if key not in seen:
+                payloads.append(payload)
+                seen.add(key)
+    return payloads
+
+
+def _link_application_complete(
+    link: LinkedEntityResult,
+    *,
+    source_id: str | None = None,
+    page_source_ids: dict[str, str] | None = None,
+) -> bool:
     """Return whether a journaled link has its entity and all mentions applied."""
     if link.selected_entity_id is None:
         return False
@@ -115,10 +151,8 @@ def _link_application_complete(link: LinkedEntityResult, *, source_id: str) -> b
             str(payload["entity_id"]),
             str(payload["source_id"]),
         )
-        for payload in _mention_payloads(
-            link.source_cluster,
-            entity_id=link.selected_entity_id,
-            source_id=source_id,
+        for payload in _linked_mention_payloads(
+            link, source_id=source_id, page_source_ids=page_source_ids
         )
     }
     return expected_mentions <= recorded_mentions
@@ -127,13 +161,20 @@ def _link_application_complete(link: LinkedEntityResult, *, source_id: str) -> b
 async def apply_linked_entity_result(
     link: LinkedEntityResult,
     *,
-    source_id: str,
+    source_id: str | None,
     api_client: httpx.AsyncClient,
     headers: dict[str, str],
     checkpoint: Callable[[], Awaitable[None]],
+    page_source_ids: dict[str, str] | None = None,
 ) -> None:
     """Apply one decision, checkpointing after every durable API mutation."""
     entity_payload = _entity_write_payload(link.decision)
+    logger.info(
+        "Applying %s decision for cluster %s (%s)",
+        link.decision.action,
+        link.cluster_id or link.source_cluster.cluster_id or "legacy",
+        link.source.name,
+    )
     if link.decision.action == "merge":
         if link.selected_entity_id is None:
             raise RuntimeError("merge decision has no selected entity ID")
@@ -173,6 +214,11 @@ async def apply_linked_entity_result(
                 link.selected_entity_after = before
                 await checkpoint()
             else:
+                logger.info(
+                    "Updating entity %s for %s",
+                    link.selected_entity_id,
+                    link.source.name,
+                )
                 after_payload = await _request_json(
                     api_client,
                     "PATCH",
@@ -211,6 +257,7 @@ async def apply_linked_entity_result(
                     create_mutation.after, "after"
                 )
         else:
+            logger.info("Creating entity for %s", link.source.name)
             create_payload = {
                 "entity_type": "person",
                 **entity_payload,
@@ -252,11 +299,17 @@ async def apply_linked_entity_result(
         for mutation in link.mutations
         if mutation.operation == "create_mention"
     }
-    for mention_payload in _mention_payloads(
-        link.source_cluster,
-        entity_id=link.selected_entity_id,
-        source_id=source_id,
-    ):
+    mention_payloads = _linked_mention_payloads(
+        link, source_id=source_id, page_source_ids=page_source_ids
+    )
+    logger.info(
+        "Saving mentions for cluster %s -> entity %s: %d expected mentions, %d already recorded",
+        link.cluster_id or link.source_cluster.cluster_id or "legacy",
+        link.selected_entity_id,
+        len(mention_payloads),
+        len(uploaded_mention_keys),
+    )
+    for mention_payload in mention_payloads:
         mention_key = (
             mention_payload["name"],
             mention_payload["context"] or "",
@@ -265,6 +318,12 @@ async def apply_linked_entity_result(
         )
         if mention_key in uploaded_mention_keys:
             continue
+        logger.info(
+            "Uploading mention %s to page source %s (entity %s)",
+            mention_payload["name"],
+            mention_payload["source_id"],
+            link.selected_entity_id,
+        )
         mention_response = await _request_json(
             api_client,
             "POST",
@@ -313,6 +372,7 @@ async def link_source_cluster(
     if decision.action == "merge" and decision.candidate_index is not None:
         selected_entity_id = candidates[decision.candidate_index - 1].entity_id
     return LinkedEntityResult(
+        cluster_id=source_cluster.cluster_id,
         source_cluster=source_cluster,
         source=source,
         candidates=candidates,

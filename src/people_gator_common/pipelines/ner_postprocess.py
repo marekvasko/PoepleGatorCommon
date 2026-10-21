@@ -288,8 +288,13 @@ def soft_link_ner(
     # Phase 2 – clustering + writing
     eps = 100.0 - threshold
     for doc_id, ner_type, indices, score_matrix in scored_groups:
+        distance_matrix = 100.0 - score_matrix
+        # A zero score on the diagonal means "not compared", not a distance
+        # of 100. DBSCAN needs each entity to be its own neighbor so that
+        # unmatched entities receive distinct cluster labels instead of -1.
+        np.fill_diagonal(distance_matrix, 0.0)
         clustering = DBSCAN(eps=eps, min_samples=1, metric="precomputed")
-        clustering.fit(100.0 - score_matrix)
+        clustering.fit(distance_matrix)
 
         remapped: dict[int, list[int]] = {}
         for local_idx, cluster_id in enumerate(clustering.labels_):

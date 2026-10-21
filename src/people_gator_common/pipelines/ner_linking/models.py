@@ -5,13 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
+from uuid import UUID
 from pydantic import BaseModel, Field, model_validator
 from people_gator_common.pipelines.llm_ner import LLMBase
-from people_gator_common.pipelines.ner_clusters import DisambiguatedNamedEntity
+from people_gator_common.pipelines.ner_clusters import (
+    ClusterMember,
+    DisambiguatedNamedEntity,
+)
 
 DEFAULT_API_BASE_URL = "https://dev.people-gator.capturemyhand.com"
 DEFAULT_INPUT_PREFIX = "page-named-entities-clusters"
 DEFAULT_OUTPUT_PREFIX = "page-named-entities-links"
+DEFAULT_DOCUMENT_INPUT_PREFIX = "document-named-entities-clusters"
+DEFAULT_DOCUMENT_OUTPUT_PREFIX = "document-named-entities-links"
 MODIFICATION_LOG_NAME = "modifications.jsonl"
 DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
@@ -26,6 +32,7 @@ class EntityLinkingConfig:
     username: str | None = None
     password: str | None = None
     timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    refresh_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +44,16 @@ class NerEntityLinkingRunSummary:
     create_decisions: int
     entity_mutations: int = 0
     uploaded_mentions: int = 0
+    processed_documents: int = 0
+    skipped_documents: int = 0
+
+
+@dataclass(frozen=True)
+class DocumentInput:
+    library: str
+    document_id: str
+    path: str
+    page_id: None = None
 
 
 @dataclass(frozen=True)
@@ -139,20 +156,34 @@ class LinkedEntityResult(BaseModel):
     unapplied_fields: list[str] = Field(default_factory=list)
     llm: LLMBase | None = None
     mutations: list[MutationAudit] = Field(default_factory=list)
+    cluster_id: UUID | None = None
+    members: list[ClusterMember] = Field(default_factory=list)
 
 
 class PageNerEntityLinks(BaseModel):
-    """All saved entity-linking decisions for one People Gator page."""
+    """Saved decisions for a page or document; legacy page journals remain valid."""
 
     library: str
     document_id: str
-    page_id: str
+    page_id: str | None = None
     links: list[LinkedEntityResult]
     mode: Literal["decision-only", "apply"] = "decision-only"
     source_id: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
     rolled_back_at: str | None = None
+    scope: Literal["page", "document"] = "page"
+    input_pages: list[str] = Field(default_factory=list)
+    input_digest: str | None = None
+    page_source_ids: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> PageNerEntityLinks:
+        if self.scope == "page" and self.page_id is None:
+            raise ValueError("page link journals require page_id")
+        if self.scope == "document" and self.page_id is not None:
+            raise ValueError("document link journals cannot identify a single page")
+        return self
 
 
 class _ApiEntityDetail(BaseModel):

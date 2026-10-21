@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field as dataclass_field
@@ -17,6 +18,8 @@ from people_gator_common.pipelines.llm_ner import PageInput, ReasoningEffort
 from people_gator_common.pipelines.ner_clusters import (
     DisambiguatedNamedEntity,
     PageNerClusters,
+    NerClustersDump,
+    load_page_ner_clusters,
 )
 from people_gator_common.progress import LoggingProgress
 from .api import _link_application_complete, apply_linked_entity_result
@@ -24,12 +27,17 @@ from .journal import _LinkPage, _MutationJournal, _link_output_path
 from .llm import llm_decide_entity_link_async
 from .models import (
     EntityCandidate,
+    DocumentInput,
     LinkableEntity,
     LinkedEntityResult,
     PageNerEntityLinks,
     _utc_now,
 )
-from .source import source_entity_from_cluster
+from .source import (
+    document_input_digest,
+    document_source_clusters,
+    source_entity_from_cluster,
+)
 from .transport import lookup_page_source, search_entity_candidates
 
 logger = logging.getLogger(__name__)
@@ -66,6 +74,8 @@ class _RunCounts:
     create_decisions: int = 0
     entity_mutations: int = 0
     uploaded_mentions: int = 0
+    processed_documents: int = 0
+    processed_units: int = 0
 
 
 class _CandidateReservations:
@@ -102,7 +112,7 @@ class LinkRun:
     def __init__(
         self,
         *,
-        pages: list[PageInput],
+        pages: list[PageInput | DocumentInput],
         resumable: dict[str, PageNerEntityLinks],
         output_prefix: str,
         api_client: httpx.AsyncClient,
@@ -152,9 +162,24 @@ class LinkRun:
                         f"Refusing to overwrite mutation journal {path}; "
                         "roll it back first or use a different output prefix"
                     )
-            source = PageNerClusters.model_validate_json(
-                storage_read_text(page_input.path)
+            logger.info("Loading cluster input %s", page_input.path)
+            content = storage_read_text(page_input.path)
+            payload = json.loads(content)
+            dump = (
+                NerClustersDump.model_validate(payload)
+                if "schema_version" in payload
+                else None
             )
+            if isinstance(page_input, DocumentInput):
+                if dump is None:
+                    raise ValueError(
+                        f"Document linking requires a scoped cluster dump: {page_input.path}"
+                    )
+                clusters = document_source_clusters(dump)
+                source = dump
+            else:
+                source = load_page_ner_clusters(content)
+                clusters = list(iter_page_source_clusters(source))
             if (source.library, source.document_id, source.page_id) != (
                 page_input.library,
                 page_input.document_id,
@@ -163,7 +188,26 @@ class LinkRun:
                 raise RuntimeError(
                     f"Input identity does not match path: {page_input.path}"
                 )
-            clusters = list(iter_page_source_clusters(source))
+            scope = "document" if isinstance(page_input, DocumentInput) else "page"
+            input_pages = (
+                [page.page_id for page in dump.inputs]
+                if dump is not None
+                else [page_input.page_id]
+            )
+            cluster_members = (
+                {str(cluster.cluster_id): cluster.members for cluster in dump.clusters}
+                if dump is not None
+                else {}
+            )
+            digest = document_input_digest(dump) if scope == "document" else None
+            logger.info(
+                "Loaded %s %s: %d pages, %d clusters, %d entity records",
+                scope,
+                page_input.path,
+                len(input_pages),
+                len(clusters),
+                sum(len(cluster.entities or []) for cluster in clusters),
+            )
             output = self.resumable.get(path) or PageNerEntityLinks(
                 library=source.library,
                 document_id=source.document_id,
@@ -171,6 +215,9 @@ class LinkRun:
                 links=[],
                 mode=self.mode,
                 started_at=_utc_now(),
+                scope=scope,
+                input_pages=input_pages,
+                input_digest=digest,
             )
             if (output.library, output.document_id, output.page_id) != (
                 source.library,
@@ -178,6 +225,14 @@ class LinkRun:
                 source.page_id,
             ):
                 raise RuntimeError(f"Audit identity does not match input page: {path}")
+            if output.scope != scope:
+                raise RuntimeError(f"Audit scope does not match input: {path}")
+            if scope == "document" and (
+                output.input_digest != digest or output.input_pages != input_pages
+            ):
+                raise RuntimeError(
+                    f"Document evidence no longer matches journal: {path}"
+                )
             if len(output.links) > len(clusters):
                 raise RuntimeError(
                     f"Audit has more decisions than input clusters: {path}"
@@ -187,19 +242,58 @@ class LinkRun:
                     raise RuntimeError(
                         f"Saved decision {index} does not match input cluster in {path}"
                     )
-            yield _LinkPage(page_input, path, clusters, output)
+                expected_members = cluster_members.get(
+                    str(clusters[index].cluster_id), []
+                )
+                if (
+                    scope == "document" or link.members
+                ) and link.members != expected_members:
+                    raise RuntimeError(
+                        f"Saved member provenance no longer matches input cluster in {path}"
+                    )
+                if (
+                    scope == "document"
+                    and link.cluster_id != clusters[index].cluster_id
+                ):
+                    raise RuntimeError(
+                        f"Saved cluster ID no longer matches input in {path}"
+                    )
+                if not link.members and scope == "page":
+                    link.members = expected_members
+                    link.cluster_id = clusters[index].cluster_id
+            yield _LinkPage(
+                page_input, path, clusters, output, cluster_members=cluster_members
+            )
+
+    def _complete_unit(self, page: _LinkPage) -> None:
+        page.output.completed_at = _utc_now()
+        self.journal.checkpoint(page)
+        self.counts.processed_units += 1
+        self.counts.processed_pages += len(page.output.input_pages) or 1
+        if page.output.scope == "document":
+            self.counts.processed_documents += 1
+        logger.info(
+            "Saved completed %s link journal %s: %d cluster decisions, %d pages",
+            page.output.scope,
+            page.path,
+            len(page.output.links),
+            len(page.output.input_pages) or 1,
+        )
 
     def _entities(self) -> Iterator[_QueuedLink]:
         for page in self._load_pages():
             if not page.clusters:
-                page.output.completed_at = _utc_now()
-                self.journal.checkpoint(page)
-                self.counts.processed_pages += 1
+                self._complete_unit(page)
             for index, cluster in enumerate(page.clusters):
                 yield _QueuedLink(page, index, cluster)
 
     async def _search(self, source: LinkableEntity) -> list[EntityCandidate]:
         """Add same-run creates while the remote search index catches up."""
+        logger.info(
+            "Searching entity candidates for %s (%d aliases)",
+            source.name,
+            len(source.aliases),
+        )
         candidates = await search_entity_candidates(
             self.api_client, self.headers, source
         )
@@ -212,6 +306,7 @@ class LinkRun:
                 name.casefold() for name in [candidate.name, *candidate.aliases]
             ):
                 candidates.append(candidate)
+        logger.info("Found %d candidate entities for %s", len(candidates), source.name)
         return candidates
 
     async def _decide(
@@ -221,6 +316,13 @@ class LinkRun:
     ) -> LinkedEntityResult:
         source = source_entity_from_cluster(cluster)
         async with self.llm_semaphore:
+            logger.info(
+                "Resolving cluster %s (%s): %d candidates, model=%s",
+                cluster.cluster_id or "legacy",
+                source.name,
+                len(candidates),
+                self.model,
+            )
             decision, llm = await llm_decide_entity_link_async(
                 source,
                 candidates,
@@ -233,7 +335,15 @@ class LinkRun:
             if decision.action == "merge" and decision.candidate_index is not None
             else None
         )
+        logger.info(
+            "Decision for cluster %s (%s): %s%s",
+            cluster.cluster_id or "legacy",
+            source.name,
+            decision.action,
+            f" entity {selected_id}" if selected_id else " a new entity",
+        )
         return LinkedEntityResult(
+            cluster_id=cluster.cluster_id,
             source_cluster=cluster,
             source=source,
             candidates=candidates,
@@ -244,7 +354,19 @@ class LinkRun:
 
     async def _prepare(self, job: _QueuedLink) -> _PreparedLink:
         if job.index < len(job.page.output.links):
+            logger.info(
+                "Reusing saved decision for cluster %s from %s",
+                job.cluster.cluster_id or job.index,
+                job.page.path,
+            )
             return _PreparedLink(job.page.output.links[job.index], self.revision)
+        logger.info(
+            "Preparing cluster %d/%d (%s) from %s",
+            job.index + 1,
+            len(job.page.clusters),
+            job.cluster.name,
+            job.page.input.path,
+        )
         source = source_entity_from_cluster(job.cluster)
         async with self.api_lock:
             candidates = await self._search(source)
@@ -285,7 +407,32 @@ class LinkRun:
         page = job.page
         output = page.output
         async with self.api_lock:
-            if output.source_id is None:
+            if output.scope == "document":
+                for page_id in dict.fromkeys(member.page_id for member in link.members):
+                    if page_id in output.page_source_ids:
+                        continue
+                    logger.info(
+                        "Resolving page source %s/%s/%s for cluster %s",
+                        page.input.library,
+                        page.input.document_id,
+                        page_id,
+                        link.cluster_id,
+                    )
+                    output.page_source_ids[page_id] = await lookup_page_source(
+                        self.api_client,
+                        self.headers,
+                        library=page.input.library,
+                        document_id=page.input.document_id,
+                        page_id=page_id,
+                    )
+                    self.journal.checkpoint(page)
+            elif output.source_id is None:
+                logger.info(
+                    "Resolving page source %s/%s/%s",
+                    page.input.library,
+                    page.input.document_id,
+                    page.input.page_id,
+                )
                 output.source_id = await lookup_page_source(
                     self.api_client,
                     self.headers,
@@ -294,9 +441,15 @@ class LinkRun:
                     page_id=page.input.page_id,
                 )
                 self.journal.checkpoint(page)
-            assert output.source_id is not None
+            if output.scope == "page":
+                assert output.source_id is not None
+            page_sources = (
+                output.page_source_ids if output.scope == "document" else None
+            )
             changes = 0
-            if not _link_application_complete(link, source_id=output.source_id):
+            if not _link_application_complete(
+                link, source_id=output.source_id, page_source_ids=page_sources
+            ):
                 before = len(link.mutations)
 
                 async def checkpoint() -> None:
@@ -305,6 +458,7 @@ class LinkRun:
                 await apply_linked_entity_result(
                     link,
                     source_id=output.source_id,
+                    page_source_ids=page_sources,
                     api_client=self.api_client,
                     headers=self.headers,
                     checkpoint=checkpoint,
@@ -349,11 +503,7 @@ class LinkRun:
         link = prepared.link
         saved = job.index < len(output.links)
         applied = saved and bool(link.mutations or link.selected_entity_after)
-        if (
-            self.mode == "apply"
-            and not applied
-            and (saved or prepared.revision != self.revision)
-        ):
+        if self.mode == "apply" and not saved and prepared.revision != self.revision:
             # Search ranking and result contents can change after any mutation.
             async with self.api_lock:
                 fresh = await self._search(link.source)
@@ -364,8 +514,14 @@ class LinkRun:
                 )
                 link = await self._decide(job.cluster, fresh)
         if not saved:
+            link.members = page.cluster_members.get(str(job.cluster.cluster_id), [])
             output.links.append(link)
             self.journal.checkpoint(page)
+            logger.info(
+                "Saved cluster %s decision to %s",
+                link.cluster_id or job.index,
+                page.path,
+            )
         elif not applied:
             output.links[job.index] = link
             self.journal.checkpoint(page)
@@ -379,12 +535,7 @@ class LinkRun:
             await self._apply(job, link)
         page.completed += 1
         if page.completed == len(page.clusters):
-            output.completed_at = _utc_now()
-            self.journal.checkpoint(page)
-            self.counts.processed_pages += 1
-            logger.info(
-                "Entity linking %s complete: %d entities", page.path, page.completed
-            )
+            self._complete_unit(page)
 
     async def run(self) -> _RunCounts:
         stream = iter(self._entities())
@@ -392,10 +543,14 @@ class LinkRun:
             logger,
             total=len(self.pages),
             description="NER entity linking",
-            unit="document-pages",
+            unit=(
+                "documents"
+                if self.pages and isinstance(self.pages[0], DocumentInput)
+                else "document-pages"
+            ),
             min_interval_seconds=self.progress_interval_seconds,
         ) as progress:
-            reported_pages = 0
+            reported_units = 0
             try:
                 while True:
                     while len(self.pending) < self.parallel_entities:
@@ -405,9 +560,9 @@ class LinkRun:
                             break
                         self._schedule(job)
                         self.pending.append(job)
-                    if self.counts.processed_pages > reported_pages:
-                        progress.update(self.counts.processed_pages - reported_pages)
-                        reported_pages = self.counts.processed_pages
+                    if self.counts.processed_units > reported_units:
+                        progress.update(self.counts.processed_units - reported_units)
+                        reported_units = self.counts.processed_units
                     if not self.pending:
                         break
                     job = self.pending.popleft()
@@ -417,9 +572,9 @@ class LinkRun:
                         await self._commit(job, prepared)
                     finally:
                         self.reservations.release(job)
-                    if self.counts.processed_pages > reported_pages:
-                        progress.update(self.counts.processed_pages - reported_pages)
-                        reported_pages = self.counts.processed_pages
+                    if self.counts.processed_units > reported_units:
+                        progress.update(self.counts.processed_units - reported_units)
+                        reported_units = self.counts.processed_units
             except BaseException:
                 await self._cancel_jobs(list(self.pending))
                 raise

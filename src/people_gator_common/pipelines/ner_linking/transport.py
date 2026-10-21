@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from typing import Any
@@ -20,6 +21,65 @@ from .source import _deduplicate_strings, build_search_queries
 logger = logging.getLogger(__name__)
 
 
+class _AuthenticatedHeaders(dict[str, str]):
+    """Run-local bearer headers and serialized refresh-token rotation."""
+
+    def __init__(self, access_token: str, refresh_token: str | None) -> None:
+        super().__init__(
+            Accept="application/json", Authorization=f"Bearer {access_token}"
+        )
+        self.refresh_token = refresh_token
+        self._refresh_lock = asyncio.Lock()
+
+    async def refresh(self, client: httpx.AsyncClient, rejected_token: str) -> None:
+        async with self._refresh_lock:
+            if self["Authorization"] != rejected_token:
+                return
+            payload = await _request_json(
+                client,
+                "POST",
+                "/token/refresh",
+                json_body={"refresh_token": self.refresh_token},
+            )
+            access_token = _access_token(payload)
+            refresh_token = payload.get("refresh_token")
+            if not isinstance(refresh_token, str) or not refresh_token:
+                raise TypeError("Token response does not contain refresh_token")
+            self["Authorization"] = f"Bearer {access_token}"
+            self.refresh_token = refresh_token
+
+
+def _access_token(payload: Any) -> str:
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("access_token"), str)
+        or not payload["access_token"]
+    ):
+        raise TypeError("Token response does not contain access_token")
+    return payload["access_token"]
+
+
+async def _request(
+    client: httpx.AsyncClient,
+    method: str,
+    path: str,
+    *,
+    headers: dict[str, str] | None = None,
+    **kwargs: Any,
+) -> httpx.Response:
+    rejected_token = headers.get("Authorization") if headers else None
+    response = await client.request(method, path, headers=headers, **kwargs)
+    if (
+        response.status_code == 401
+        and isinstance(headers, _AuthenticatedHeaders)
+        and headers.refresh_token
+    ):
+        await response.aclose()
+        await headers.refresh(client, rejected_token)
+        response = await client.request(method, path, headers=headers, **kwargs)
+    return response
+
+
 async def _request_json(
     client: httpx.AsyncClient,
     method: str,
@@ -30,7 +90,8 @@ async def _request_json(
     json_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
-        response = await client.request(
+        response = await _request(
+            client,
             method,
             path,
             headers=headers,
@@ -62,7 +123,7 @@ async def _request_no_content(
     headers: dict[str, str],
 ) -> None:
     try:
-        response = await client.request(method, path, headers=headers)
+        response = await _request(client, method, path, headers=headers)
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise RuntimeError(
@@ -80,11 +141,20 @@ async def authenticate_entity_linking_api(
     scopes: Sequence[str] = ("people-gator:browse",),
 ) -> str:
     """Resolve a supplied bearer token or obtain one via OAuth2 password flow."""
+    headers = await _authenticate_headers(client, config, scopes=scopes)
+    return headers["Authorization"].removeprefix("Bearer ")
+
+
+async def _authenticate_headers(
+    client: httpx.AsyncClient,
+    config: EntityLinkingConfig,
+    *,
+    scopes: Sequence[str] = ("people-gator:browse",),
+) -> _AuthenticatedHeaders:
     if config.bearer_token:
-        return config.bearer_token
+        return _AuthenticatedHeaders(config.bearer_token, config.refresh_token)
     if not config.username or config.password is None:
         raise ValueError("provide a bearer token or both API username and password")
-
     try:
         response = await client.post(
             "/token/login",
@@ -101,11 +171,13 @@ async def authenticate_entity_linking_api(
             f"{exc.response.status_code}: {exc.response.text}"
         ) from exc
     payload = response.json()
-    if not isinstance(payload, dict) or not isinstance(
-        payload.get("access_token"), str
+    access_token = _access_token(payload)
+    refresh_token = payload.get("refresh_token")
+    if refresh_token is not None and (
+        not isinstance(refresh_token, str) or not refresh_token
     ):
-        raise TypeError("Token response does not contain access_token")
-    return payload["access_token"]
+        raise TypeError("Token response contains an invalid refresh_token")
+    return _AuthenticatedHeaders(access_token, refresh_token)
 
 
 async def search_entity_candidates(
@@ -117,6 +189,11 @@ async def search_entity_candidates(
     queries = build_search_queries(source)
     if not queries:
         return []
+    logger.info(
+        "Searching API candidates for %s using %d query values",
+        source.name,
+        len(queries),
+    )
     search_response = await _request_json(
         client,
         "GET",
@@ -144,7 +221,10 @@ async def search_entity_candidates(
         )
 
     details = []
-    for entity_id, _ in unique_hits:
+    for index, (entity_id, _) in enumerate(unique_hits, start=1):
+        logger.info(
+            "Loading candidate entity %d/%d: %s", index, len(unique_hits), entity_id
+        )
         details.append(
             await _request_json(
                 client, "GET", f"/api/v1/entities/{entity_id}", headers=headers

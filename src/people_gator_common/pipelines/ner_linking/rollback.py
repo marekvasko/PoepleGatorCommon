@@ -17,7 +17,7 @@ from .api import _entity_snapshot, _mutable_entity_state, _snapshot_from_audit
 from .transport import (
     _request_json,
     _request_no_content,
-    authenticate_entity_linking_api,
+    _authenticate_headers,
 )
 from .models import (
     DEFAULT_OUTPUT_PREFIX,
@@ -32,8 +32,15 @@ logger = logging.getLogger(__name__)
 
 def _latest_rollbackable_output(output_prefix: str) -> tuple[str, PageNerEntityLinks]:
     latest: tuple[str, str, PageNerEntityLinks] | None = None
-    pattern = posixpath.join(posixpath.normpath(output_prefix), "*", "*", "*.json")
-    for path in storage_glob(pattern):
+    prefix = posixpath.normpath(output_prefix)
+    paths = set(storage_glob(posixpath.join(prefix, "*", "*", "*.json")))
+    paths.update(storage_glob(posixpath.join(prefix, "*", "*.json")))
+    logger.info(
+        "Checking %d page/document link journals for rollback below %s",
+        len(paths),
+        prefix,
+    )
+    for path in sorted(paths):
         try:
             output = PageNerEntityLinks.model_validate_json(storage_read_text(path))
         except (ValidationError, ValueError):
@@ -62,11 +69,12 @@ async def rollback_latest_entity_linking_run(
     force: bool = False,
     api_client: httpx.AsyncClient | None = None,
 ) -> EntityLinkingRollbackSummary:
-    """Reverse the newest journaled page, refusing changed entities by default."""
+    """Reverse the newest page/document journal, refusing changed entities by default."""
     audit_path, output = _latest_rollbackable_output(os.fspath(output_prefix))
+    logger.info("Rolling back %s link journal %s", output.scope, audit_path)
 
     async def run(client: httpx.AsyncClient) -> EntityLinkingRollbackSummary:
-        token = await authenticate_entity_linking_api(
+        headers = await _authenticate_headers(
             client,
             config,
             scopes=(
@@ -75,10 +83,6 @@ async def rollback_latest_entity_linking_run(
                 "people-gator:admin",
             ),
         )
-        headers = {
-            "Accept": "application/json",
-            "Authorization": f"Bearer {token}",
-        }
         mutations = [
             mutation
             for link in output.links

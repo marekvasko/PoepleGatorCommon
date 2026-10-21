@@ -3,17 +3,45 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from collections.abc import Sequence
 from typing import Any
 
 from pydantic import ValidationError
-from people_gator_common.pipelines.ner_clusters import DisambiguatedNamedEntity
+from people_gator_common.pipelines.ner_clusters import (
+    DisambiguatedNamedEntity,
+    NerClustersDump,
+)
 from .models import (
     EntityCandidate,
     EntityLinkDecision,
     LinkableEntity,
     ProposedEntityLink,
 )
+
+
+def document_input_digest(dump: NerClustersDump) -> str:
+    """Identify the evidence being linked, independent of rerun/audit metadata."""
+    content = dump.model_dump_json(
+        exclude={"run_id", "input_fingerprint", "disambiguations"}
+    )
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
+def document_source_clusters(dump: NerClustersDump) -> list[DisambiguatedNamedEntity]:
+    if dump.scope != "document":
+        raise ValueError("document linking requires a document-scoped cluster dump")
+    return [
+        DisambiguatedNamedEntity(
+            cluster_id=cluster.cluster_id,
+            name=cluster.name,
+            short_description=cluster.short_description,
+            long_description=cluster.long_description,
+            entity_indices=cluster.entity_indices,
+            entities=[member.entity for member in cluster.members],
+        )
+        for cluster in dump.clusters
+    ]
 
 
 def _deduplicate_strings(values: Sequence[str]) -> list[str]:
